@@ -1,0 +1,134 @@
+# p2p packet
+
+| verion | type | legnth | payload |
+|--------|------|--------|---------|
+| 1      | 1    | 2      | 0..1194 |
+
+  ## payload packet
+
+    ### hello
+    
+    | public key diffie-hellman x25519 | ED255129 public key | dynamic ip | cookie | signature |
+    |----------------------------------|---------------------|------------|--------|-----------|
+    | 32                               | 32                  | 1          | 32     | 64        |
+
+    ### ping
+
+    | cookie |
+    |--------|
+    | 32     |
+
+    ### data
+
+      #### reliable_data
+
+      | id | type | length | sequence number | ack number | data    |
+      |----|------|--------|-----------------|------------|---------|
+      | 1  | 1    | 2      | 4               | 4          | 0..1182 |
+      +----+------|--------+-----------------+------------+---------+
+      |                            ...                              |
+
+      #### unreliable_data
+
+      | id | type | length | data    |
+      |----|------|--------|---------|
+      | 1  | 1    | 2      | 0..1190 |
+      +----+------|--------+---------+
+      |              ...             |
+
+      #### unreliable_data_ack
+
+      | id | type | length | ack number | data    |
+      |----|------|--------|------------|---------|
+      | 1  | 1    | 2      | 4          | 0..1186 |
+      +----+------|--------+------------+---------+
+      |                    ...                    |
+
+      #### peers_list_request
+
+      | id | type |
+      |----|------|
+      | 1  | 1    |
+      |----+------|
+      |    ...    |
+
+      #### introduction_request
+
+      | id | type | public key diffie-hellman x25519 | target ED255129 public key | dynamic ip | cookie | signature |
+      |----|------|----------------------------------|----------------------------|------------|--------|-----------|
+      | 1  | 1    | 32                               | 32                         | 1          | 32     | 64        |
+      |----+------|----------------------------------+----------------------------+------------+--------+-----------|
+      |                                                       ...                                                   |
+
+      #### introduction_response
+
+      | id | type | status |
+      |----|------|--------|
+      | 1  | 1    | 1      |
+      |----+------|--------|
+      |        ...         |
+
+      #### introduction
+
+      | id | type | ipv6 address | port | public key diffie-hellman x25519 | target ED255129 public key | dynamic ip | cookie | signature |
+      |----|------|--------------|------|----------------------------------|----------------------------|------------|--------|-----------|
+      | 1  | 1    | 16           | 2    | 32                               | 32                         | 1          | 32     | 64        |
+      |----+------|--------------|------|----------------------------------+----------------------------+------------+--------+-----------|
+      |                                                            ...                                                                    |
+
+      #### introduction_ack
+
+      | id | type | status |
+      |----|------|--------|
+      | 1  | 1    | 1      |
+      |----+------|--------|
+      |        ...         |
+
+# 2p2 protocol
+
+  ## handshake
+
+  node 1                node 2
+  ----------------------------
+  hello                 ->
+  <-                    hello
+
+  ## ping
+
+  node 1                node 2
+  ----------------------------
+  ping                  ->
+  <-                    ping
+
+  ## data
+
+  node 1                                             node 2
+  ---------------------------------------------------------
+  reliable_data                                          ->
+  <-                    reliable_data / unreliable_data_ack
+
+  node 1                                             node 2
+  ---------------------------------------------------------
+  unreliable_data                                        ->
+  <-                        unreliable_data / reliable_data
+
+  ## peers list request
+
+  node 1                                             node 2
+  ---------------------------------------------------------
+  peers_list_request                                     ->
+  <-                                          reliable_data
+  unreliable_data_ack                                    ->
+
+  ## introduction
+
+  node 1                                    node2                                   node 3
+  ----------------------------------------------------------------------------------------
+  introduction_request                         ->
+                                            introduction                                ->
+                                            <-                            introduction_ack
+  <-                                                                                  ping
+  <-                        introduction_response
+  ping                                                                                  ->
+  <-                                                                                 hello
+
