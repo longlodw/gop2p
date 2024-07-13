@@ -6,87 +6,37 @@
 
   ## payload packet
 
-    ### hello
+    ### hello (unencrypted)
     
     | public key diffie-hellman x25519 | ED255129 public key | signature | cookie |
     |----------------------------------|---------------------|-----------|--------|
     | 32                               | 32                  | 64        | 32     |
 
-    ### ping / hello retry
+    ### hello retry (unencrypted)
 
     | cookie |
     |--------|
     | 32     |
 
-    ### data
+    ### introduction (encrypted)
 
-    | number of channels | data channels |
-    |--------------------|---------------|
-    | 1                  | 0..1195       |
+    | public key diffie-hellman x25519 | source ED255129 public key | source ipv6 address | source port |  target ED255129 public key | signature |
+    |----------------------------------|----------------------------|---------------------|-------------|-----------------------------|-----------|
+    | 32                               | 32                         | 16                  | 2           | 32                          | 64        |
 
-      #### reliable_data
+    ### data (encrypted)
+
+      #### data unfinished
 
       | id | type | sequence number | ack number | length | data    |
       |----|------|-----------------|------------|--------|---------|
-      | 1  | 1    | 4               | 4          | 2      | 0..1183 |
-      +----+------+-----------------+------------+--------+---------+
-      |                            ...                              |
+      | 1  | 1    | 4               | 4          | 2      | 0..1184 |
 
-      #### peers_list_request
+      #### data finished
 
       | id | type | sequence number | ack number |
       |----|------|-----------------|------------|
       | 1  | 1    | 4               | 4          |
-      +----+------+-----------------+------------+
-      |                     ...                  |
-
-      #### peers_list
-
-      | id | type | sequence number | ack number | number_of_peers | peers   |
-      |----|------|-----------------|------------|-----------------|---------|
-      | 1  | 1    | 4               | 4          | 4               | 0..1181 |
-      +----+------+-----------------+------------+-----------------+---------+
-      |                                     ...                              |
-
-        ##### peer
-
-        | ED255129 public key | ipv6 address | port | last seen |
-        |---------------------|--------------|------|-----------|
-        | 32                  | 16           | 2    | 8         |
-        +---------------------+--------------+------+-----------+
-        |                          ...                          |
-
-      #### introduction_request
-
-      | id | type | sequence number | ack number | public key diffie-hellman x25519 | target ED255129 public key | signature |
-      |----|------|-----------------|------------|----------------------------------|----------------------------|-----------|
-      | 1  | 1    | 4               | 4          | 32                               | 32                         | 64        |
-      +----+------+-----------------+------------+----------------------------------+----------------------------+-----------+
-      |                                                        ...                                                           |
-
-      #### introduction
-
-      | id | type | sequence number | ack number | public key diffie-hellman x25519 | target ED255129 public key | signature | ipv6 address | port |
-      |----|------|-----------------|------------|----------------------------------|----------------------------|-----------|--------------|------|
-      | 1  | 1    | 4               | 4          | 32                               | 32                         | 64        | 16           | 2    |
-      +----+------+-----------------+------------+----------------------------------+----------------------------+-----------+--------------+------+
-      |                                                                  ...                                                                       |
-
-      #### introduction_ack
-
-      | id | type | sequence number | ack number | status |
-      |----|------|-----------------|------------|--------|
-      | 1  | 1    | 4               | 4          | 1      |
-      +----+------+-----------------+------------+--------+
-      |                        ...                        |
-
-      #### finish
-
-      | id | type | sequence number | ack number |
-      |----|------|-----------------|------------|
-      | 1  | 1    | 4               | 4          |
-      +----+------+-----------------+------------+
-      |                     ...                  |
 
 # 2p2 protocol
 
@@ -99,42 +49,25 @@
   hello                     ->
   <-                     hello
 
-  ## ping
-
-  node 1                node 2
-  ----------------------------
-  ping                      ->
-  <-                      ping
-
   ## data
 
   node 1                                             node 2
   ---------------------------------------------------------
-  reliable_data                                          ->
-  <-                                          reliable_data
-
-  node 1                                             node 2
-  ---------------------------------------------------------
-  unreliable_data                                        ->
-  <-                                          reliable_data
-
-  ## peers list request
-
-  node 1                                             node 2
-  ---------------------------------------------------------
-  peers_list_request                                     ->
-  <-                                             peers_list
-  reliable_data                                          ->
+  data, seq=s, ack=a                                     ->
+  <-                                   data, seq=a, ack=s+1
+  data, seq=s+1, ack=a+1                                 ->
+  <-                                 data, seq=a+1, ack=s+2
+  finish, seq=s+2, ack=a+2                               ->
+  <-                               finish, seq=a+2, ack=s+3
 
   ## introduction
 
   node 1                                    node2                                   node 3
   ----------------------------------------------------------------------------------------
-  introduction_request                         ->
+  introduction                                 ->
   ping                                                                                  ->
-                                            introduction                                ->
-                                            <-                            introduction_ack
-  <-                                                                                  ping
-  <-                             introduction_ack
+                                            introduction                          ->
+  <-                                                                           hello retry
+  hello                                                                                 ->
   <-                                                                                 hello
 
