@@ -3,7 +3,6 @@ package v0
 import (
 	"encoding/binary"
 	"errors"
-	"net"
 )
 
 type Hello struct {
@@ -18,12 +17,12 @@ type HelloRetry struct {
 }
 
 type Introduction struct {
+  Flags byte
   PublicKeyDH [PublicKeyDHSize]byte
-  SourcePublicKeyED [PublicKeyEDSize]byte
-  SourceIP [IPV6Size]byte
-  SourcePort uint16
-  TargetPublicKeyED [PublicKeyEDSize]byte
+  PublicKeyED [PublicKeyEDSize]byte
   Signature [SignatureSize]byte
+  IP [IPV6Size]byte
+  Port uint16
 }
 
 type Data struct {
@@ -75,7 +74,11 @@ const (
   PacketTypeSize = 1
   HeaderSize = VersionSize + PacketTypeSize
   HelloSize = PublicKeyDHSize + PublicKeyEDSize + SignatureSize + CookieSize
-  IntroductionSize = PublicKeyDHSize + PublicKeyEDSize + IPV6Size + PortSize + PublicKeyEDSize + SignatureSize
+  IntroductionSize = 1 + PublicKeyDHSize + PublicKeyEDSize + SignatureSize + IPV6Size + PortSize 
+)
+
+const (
+  IntroductionIsSourceAddress = 1
 )
 
 type Packet interface {
@@ -84,55 +87,21 @@ type Packet interface {
   BufferSize() int
 }
 
-type PacketsHandler interface {
-  OnPacket(Packet, *Identifier) (PacketsHandler, *Transaction[Packet], error)
-  Serialize(*Transaction[Packet]) *Transaction[[]byte]
-  Deserialize([]byte) *Transaction[Packet]
-}
-
-func HandleBytes(packetsHandler PacketsHandler, buf []byte, addr *net.UDPAddr, newConnections chan *Connection) (PacketsHandler, *Transaction[[]byte], error) {
-  transactions := packetsHandler.Deserialize(buf)
-  if transactions == nil {
-    return nil, nil, errors.New("Invalid bytes")
-  }
-  chunks := make([]Packet, 0)
-  var ph PacketsHandler = nil
-  for _, p := range transactions.Chunks {
-    ph, tr, err := packetsHandler.OnPacket(p, transactions.Des)
-    if err != nil {
-      continue
-    }
-    if tr != nil {
-      chunks = append(chunks, tr.Chunks...)
-    }
-    if ph != nil {
-      break
-    }
-  }
-  transactions.Chunks = chunks
-  transactionsBytes := packetsHandler.Serialize(transactions)
-  if _, ok := ph.(*Connection); ok {
-    newConnections <- ph.(*Connection)
-  }
-  return ph, transactionsBytes, nil
-}
-
-func DefaultPacketSerialize(packets *Transaction[Packet]) *Transaction[[]byte] {
+func SerializePackets(packets []Packet) [][]byte {
   start := 0
-  sendBuffers := make([][]byte, 1)
-  chunks := packets.Chunks
-  for start < len(chunks) {
-    end, bufferLen := nextPacketIndex(chunks, start)
+  serializedBuffers := make([][]byte, 0)
+  for start < len(packets) {
+    end, bufferLen := nextPacketIndex(packets, start)
     buffer := make([]byte, bufferLen)
     n := 0
     for i := start; i < end; i++ {
-      c, _ := chunks[i].Serialize(buffer[n:])
+      c, _ := packets[i].Serialize(buffer[n:])
       n += c
     }
-    sendBuffers = append(sendBuffers, buffer)
+    serializedBuffers = append(serializedBuffers, buffer)
     start = end
   }
-  return &Transaction[[]byte]{Des: packets.Des, Chunks: sendBuffers}
+  return serializedBuffers
 }
 
 func nextPacketIndex(packets []Packet, start int) (int, int) {
@@ -144,6 +113,19 @@ func nextPacketIndex(packets []Packet, start int) (int, int) {
     bufferLen += packets[i].BufferSize()
   }
   return len(packets), bufferLen
+}
+
+func DeserializePackets(buffers []byte) ([]Packet, error) {
+  packets := make([]Packet, 0)
+  for len(buffers) > 0 {
+    packet, n, err := DeserializePacket(buffers)
+    if err != nil {
+      return packets, err
+    }
+    packets = append(packets, packet)
+    buffers = buffers[n:]
+  }
+  return packets, nil
 }
 
 func DeserializePacket(buffer []byte) (Packet, int, error) {
@@ -205,18 +187,17 @@ func DeserializeIntroduction(buffer []byte) (*Introduction, int, error) {
   }
 
   introduction := &Introduction{}
+  introduction.Flags = buffer[0]
+  buffer = buffer[1:]
   copy(introduction.PublicKeyDH[:], buffer[:PublicKeyDHSize])
   buffer = buffer[PublicKeyDHSize:]
-  copy(introduction.SourcePublicKeyED[:], buffer[:PublicKeyEDSize])
-  buffer = buffer[PublicKeyEDSize:]
-  copy(introduction.SourceIP[:], buffer[:IPV6Size])
-  buffer = buffer[IPV6Size:]
-  introduction.SourcePort = binary.BigEndian.Uint16(buffer)
-  buffer = buffer[PortSize:]
-  copy(introduction.TargetPublicKeyED[:], buffer[:PublicKeyEDSize])
+  copy(introduction.PublicKeyED[:], buffer[:PublicKeyEDSize])
   buffer = buffer[PublicKeyEDSize:]
   copy(introduction.Signature[:], buffer[:SignatureSize])
-
+  buffer = buffer[SignatureSize:]
+  copy(introduction.IP[:], buffer[:IPV6Size])
+  buffer = buffer[IPV6Size:]
+  introduction.Port = binary.BigEndian.Uint16(buffer)
   return introduction, IntroductionSize, nil
 }
 
@@ -318,13 +299,14 @@ func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
 
   n := 0
   n += copy(buffer, []byte{Version, PacketIntroduction})
+  buffer[n] = introduction.Flags
+  n += 1
   n += copy(buffer[n:], introduction.PublicKeyDH[:])
-  n += copy(buffer[n:], introduction.SourcePublicKeyED[:])
-  n += copy(buffer[n:], introduction.SourceIP[:])
-  binary.BigEndian.PutUint16(buffer[n:], introduction.SourcePort)
-  n += PortSize
-  n += copy(buffer[n:], introduction.TargetPublicKeyED[:])
+  n += copy(buffer[n:], introduction.PublicKeyED[:])
   n += copy(buffer[n:], introduction.Signature[:])
+  n += copy(buffer[n:], introduction.IP[:])
+  binary.BigEndian.PutUint16(buffer[n:], introduction.Port)
+  n += PortSize
 
   return n, nil
 }
