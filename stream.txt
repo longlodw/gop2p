@@ -1,7 +1,0 @@
-rx buffer
-tx buffer
-
-sequence number
-ack number
-
-
