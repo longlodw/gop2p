@@ -46,6 +46,45 @@ func (node *Node) NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udp
   }
 }
 
+func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
+  node.mutex.RLock()
+  conn, ok := node.ipToConnection[addr.String()]
+  node.mutex.RUnlock()
+  if !ok {
+    return errors.New("Connection not established")
+  }
+  closed, err := conn.closeStream(node.udpConn, streamID)
+  if closed {
+    node.mutex.Lock()
+    delete(node.ipToConnection, addr.String())
+    node.mutex.Unlock()
+  }
+  if err != nil {
+    return err
+  }
+  return nil
+}
+
+func (node *Node) ClosePeer(addr *net.UDPAddr) error {
+  node.mutex.RLock()
+  conn, ok := node.ipToConnection[addr.String()]
+  node.mutex.RUnlock()
+  if !ok {
+    return errors.New("Connection not established")
+  }
+  err := conn.close(node.udpConn)
+  node.mutex.Lock()
+  delete(node.ipToConnection, addr.String())
+  node.mutex.Unlock()
+  return err
+}
+
+func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
+  node.mutex.Lock()
+  delete(node.ipToConnection, addr.String())
+  node.mutex.Unlock()
+}
+
 func (node *Node) Connect(addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {

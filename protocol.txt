@@ -20,9 +20,9 @@
 
     ### introduction (encrypted)
 
-    | public key diffie-hellman x25519 | source ED255129 public key | source ipv6 address | source port |  target ED255129 public key | signature |
-    |----------------------------------|----------------------------|---------------------|-------------|-----------------------------|-----------|
-    | 32                               | 32                         | 16                  | 2           | 32                          | 64        |
+    | flags | public key diffie-hellman x25519 | source ED255129 public key | signature | ipv6 address | port |
+    |-------|----------------------------------|----------------------------|-----------|--------------|------|
+    | 1     | 32                               | 32                         | 64        | 16           | 2    |
 
     ### data (encrypted)
 

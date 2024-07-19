@@ -93,6 +93,61 @@ func (connection *EncryptedConnection) tryAck(streamID byte, udpConn *net.UDPCon
   return nil
 }
 
+func (connection *EncryptedConnection) closeStream(udpConn *net.UDPConn, streamID byte) (bool, error) {
+  connection.rwMutex.RLock()
+  stream, ok := connection.streams[streamID]
+  connection.rwMutex.RUnlock()
+  if !ok {
+    return false, nil
+  }
+
+  closed := false
+  connection.rwMutex.Lock()
+  delete(connection.streams, streamID)
+  if len(connection.streams) == 0 {
+    closed = true
+  }
+  connection.rwMutex.Unlock()
+
+  packet := stream.close()
+  packets := connection.txStream.Add([]Packet{packet})
+  if packets == nil {
+    return closed, nil
+  }
+  bytesToSend := SerializePackets(packets)
+  for _, b := range bytesToSend {
+    connection.encrypt(b, b)
+    _, err := udpConn.WriteToUDP(b, connection.addr)
+    if err != nil {
+      return closed, err
+    }
+  }
+  return closed, nil
+}
+
+func (connection *EncryptedConnection) close(udpConn *net.UDPConn) error {
+  packets := make([]Packet, 0)
+  connection.rwMutex.Lock()
+  for _, stream := range connection.streams {
+    packet := stream.close()
+    packets = append(packets, packet)
+  }
+  connection.rwMutex.Unlock()
+  packets = connection.txStream.Add(packets)
+  if packets == nil {
+    return nil
+  }
+  bytesToSend := SerializePackets(packets)
+  for _, b := range bytesToSend {
+    connection.encrypt(b, b)
+    _, err := udpConn.WriteToUDP(b, connection.addr)
+    if err != nil {
+      return err
+    }
+  }
+  return nil
+}
+
 func (connection *EncryptedConnection) onSend(data []byte, streamID byte, udpConn *net.UDPConn) error {
   connection.rwMutex.RLock()
   stream, ok := connection.streams[streamID]

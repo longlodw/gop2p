@@ -26,6 +26,20 @@ func newStream(streamID byte) *stream {
   }
 }
 
+func (s *stream) close() Packet {
+  s.mutex.Lock()
+  defer s.mutex.Unlock()
+  packet := &Data{
+    StreamID: s.streamID,
+    SequenceNumber: s.sequenceNumber,
+    AckNumber: s.ackNumber,
+    DataType: DataFinished,
+  }
+  s.txPacketsMap[s.sequenceNumber] = packet
+  s.sequenceNumber += 1
+  return packet
+}
+
 func (s *stream) onSend(data []byte) []Packet {
   s.mutex.Lock()
   defer s.mutex.Unlock()
