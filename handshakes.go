@@ -1,4 +1,4 @@
-package v0
+package gop2p
 
 import (
 	"crypto/ecdh"
@@ -26,22 +26,19 @@ func NewHandshake() *Handshake {
   }
 }
 
-func (handShake *Handshake) onHello(packet *Hello, source *net.UDPAddr, ipToConnection *map[string]*EncryptedConnection, inToHandshake *map[string]*Handshake) error {
+func (handShake *Handshake) onHello(packet *Hello, source *net.UDPAddr) (*EncryptedConnection, error) {
   if !verifyHello(packet.PublicKeyDH[:], packet.PublicKeyED[:], packet.Signature[:]) {
-    return errors.New("Invalid signature")
+    return nil, errors.New("Invalid signature")
   }
   publicKeyDH, err := ecdh.X25519().NewPublicKey(packet.PublicKeyDH[:])
   if err != nil {
-    return err
+    return nil ,err
   }
   aesSecret, err := handShake.privateKeyDH.ECDH(publicKeyDH)
   if err != nil {
-    return err
+    return nil, err
   }
-  encryptedConnection := NewEncryptedConnection(source, packet.PublicKeyED[:], aesSecret)
-  (*ipToConnection)[source.String()] = encryptedConnection
-  delete(*inToHandshake, source.String())
-  return nil
+  return NewEncryptedConnection(source, packet.PublicKeyED[:], aesSecret), nil
 }
 
 func (handshake *Handshake) onHelloRetry(packet *HelloRetry, source *net.UDPAddr, udpConn *net.UDPConn, localPrivateKeyED []byte, localPublicKeyED []byte) error {
@@ -66,6 +63,6 @@ func computeCookie(publicKeyDH []byte, publicKeyED []byte, signature []byte, sec
 }
 
 func verifyHello(publicKeyDH []byte, publicKeyED []byte, signature []byte) bool {
-  return ed25519.Verify(publicKeyDH, append(publicKeyDH, publicKeyED...), signature)
+  return ed25519.Verify(publicKeyED, append(publicKeyDH, publicKeyED...), signature)
 }
 

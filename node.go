@@ -1,12 +1,13 @@
-package v0
+package gop2p
 
 import (
+	"context"
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"net"
 	"sync"
-	"crypto/ecdh"
-	"crypto/rand"
-	"crypto/ed25519"
 )
 
 type Node struct {
@@ -17,16 +18,17 @@ type Node struct {
   ipToConnection map[string]*EncryptedConnection
   ipToHandshake map[string]*Handshake
   mutex sync.RWMutex
-  consumableBuffer chan consumable
+  incomingConnection chan incomingConnectionInfo
 }
 
-type consumable struct {
-  buffer []byte
+type incomingConnectionInfo struct {
   addr *net.UDPAddr
-  streamID byte
+  publicKeyED []byte
+  aesSecret []byte
+  publicKeyDH []byte
 }
 
-func (node *Node) NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpConn *net.UDPConn) *Node {
+func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpConn *net.UDPConn) *Node {
   randomSecret := make([]byte, 32)
   n, err := rand.Read(randomSecret)
   if err != nil {
@@ -42,7 +44,7 @@ func (node *Node) NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udp
     udpConn: udpConn,
     ipToConnection: make(map[string]*EncryptedConnection),
     ipToHandshake: make(map[string]*Handshake),
-    consumableBuffer: make(chan consumable),
+    incomingConnection: make(chan incomingConnectionInfo, 8),
   }
 }
 
@@ -55,6 +57,7 @@ func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
   }
   closed, err := conn.closeStream(node.udpConn, streamID)
   if closed {
+    close(conn.consumableBuffer)
     node.mutex.Lock()
     delete(node.ipToConnection, addr.String())
     node.mutex.Unlock()
@@ -73,6 +76,7 @@ func (node *Node) ClosePeer(addr *net.UDPAddr) error {
     return errors.New("Connection not established")
   }
   err := conn.close(node.udpConn)
+  close(conn.consumableBuffer)
   node.mutex.Lock()
   delete(node.ipToConnection, addr.String())
   node.mutex.Unlock()
@@ -81,11 +85,15 @@ func (node *Node) ClosePeer(addr *net.UDPAddr) error {
 
 func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
   node.mutex.Lock()
-  delete(node.ipToConnection, addr.String())
+  conn, ok := node.ipToConnection[addr.String()]
+  if ok {
+    close(conn.consumableBuffer)
+    delete(node.ipToConnection, addr.String())
+  }
   node.mutex.Unlock()
 }
 
-func (node *Node) Connect(addr *net.UDPAddr) error {
+func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
@@ -95,6 +103,9 @@ func (node *Node) Connect(addr *net.UDPAddr) error {
   node.mutex.RUnlock()
   if !ok {
     handshake = NewHandshake()
+    node.mutex.Lock()
+    node.ipToHandshake[addr.String()] = handshake
+    node.mutex.Unlock()
   }
   hello := &Hello{
     PublicKeyDH: [32]byte(handshake.publicKeyDH.Bytes()),
@@ -110,10 +121,58 @@ func (node *Node) Connect(addr *net.UDPAddr) error {
   if err != nil {
     return err
   }
+  for node.IsConnected(addr) == false {
+    select {
+    case <-ctx.Done():
+      return errors.New("Context cancelled")
+    default:
+      err := node.Run()
+      if err != nil {
+	return err
+      }
+    }
+  }
   return nil
 }
 
-func (node *Node) ConnectViaPeer(addr *net.UDPAddr, intermediate *net.UDPAddr) error {
+func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
+  for {
+    select {
+    case <-ctx.Done():
+      return nil, errors.New("Context cancelled")
+    case incoming, ok := <-node.incomingConnection:
+      if !ok {
+	return nil, errors.New("Channel closed")
+      }
+      helloReply := &Hello{
+	PublicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
+	PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
+	Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(incoming.publicKeyDH, node.localPublicKeyED...))),
+      }
+      bytesToSend := make([]byte, helloReply.BufferSize())
+      n, err := helloReply.Serialize(bytesToSend)
+      if err != nil {
+	return nil, err
+      }
+      _, err = node.udpConn.WriteToUDP(bytesToSend[:n], incoming.addr)
+      if err != nil {
+	return nil, err
+      }
+      connection := NewEncryptedConnection(incoming.addr, incoming.publicKeyED[:], incoming.aesSecret)
+      node.mutex.Lock()
+      node.ipToConnection[incoming.addr.String()] = connection
+      node.mutex.Unlock()
+      return incoming.addr, nil
+    default:
+      err := node.Run()
+      if err != nil {
+	return nil, err
+      }
+    }
+  }
+}
+
+func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, intermediate *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
@@ -133,9 +192,9 @@ func (node *Node) ConnectViaPeer(addr *net.UDPAddr, intermediate *net.UDPAddr) e
     Flags: 0,
     IP: [16]byte(addr.IP.To16()),
     Port: uint16(addr.Port),
-    PublicKeyDH: [32]byte(handshake.publicKeyDH.Bytes()),
-    PublicKeyED: [32]byte(node.localPublicKeyED),
-    Signature: [64]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
+    PublicKeyDH: [PublicKeyDHSize]byte(handshake.publicKeyDH.Bytes()),
+    PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
+    Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
   }
   packets := conn.txStream.Add([]Packet{intro})
   if packets == nil {
@@ -149,7 +208,25 @@ func (node *Node) ConnectViaPeer(addr *net.UDPAddr, intermediate *net.UDPAddr) e
       return err
     }
   }
+  for node.IsConnected(addr) == false {
+    select {
+    case <-ctx.Done():
+      return errors.New("Context cancelled")
+    default:
+      err := node.Run()
+      if err != nil {
+	return err
+      }
+    }
+  }
   return nil
+}
+
+func (node *Node) IsConnected(addr *net.UDPAddr) bool {
+  node.mutex.RLock()
+  _, ok := node.ipToConnection[addr.String()]
+  node.mutex.RUnlock()
+  return ok
 }
 
 func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
@@ -162,24 +239,29 @@ func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
   return nil, errors.New("No connection")
 }
 
-func (node *Node) Recv() ([]byte, *net.UDPAddr, byte, error) {
+func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, error) {
   for {
     select {
-    case consumable, ok := <-node.consumableBuffer:
-      if !ok {
-	return nil, nil, 0, errors.New("Channel closed")
-      }
+    case <-ctx.Done():
+      return nil, 0, errors.New("Context cancelled")
+    default:
       node.mutex.RLock()
-      conn, ok := node.ipToConnection[consumable.addr.String()]
+      conn, ok := node.ipToConnection[addr.String()]
       node.mutex.RUnlock()
       if !ok {
-	return consumable.buffer, consumable.addr, consumable.streamID, nil
+	return nil, 0, errors.New("Connection not established")
       }
-      return consumable.buffer, consumable.addr, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
-    default:
-      err := node.run()
-      if err != nil {
-	return nil, nil, 0, err
+      select {
+      case consumable, ok := <-conn.consumableBuffer:
+	if !ok {
+	  return nil, 0, errors.New("Channel closed")
+	}
+	return consumable.buffer, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
+      default:
+	err := node.Run()
+	if err != nil {
+	  return nil, 0, err
+	}
       }
     }
   }
@@ -205,7 +287,7 @@ func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
   return conn.onSend(data, streamID, node.udpConn)
 }
 
-func (node *Node) run() error {
+func (node *Node) Run() error {
   buf := make([]byte, MaxPacketSize)
   n, addr, err := node.udpConn.ReadFromUDP(buf)
   if err != nil {
@@ -237,6 +319,9 @@ func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
   hello := packet.(*Hello)
   cookie := computeCookie(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:], node.randomSecret)
   if hello.Cookie != cookie {
+    if !verifyHello(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:]) {
+      return nil
+    }
     retry := &HelloRetry{
       Cookie: cookie,
     }
@@ -252,15 +337,20 @@ func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
   if err != nil {
     return err
   }
-  localPrivateKeyED, err := ecdh.X25519().NewPrivateKey(node.localPrivateKeyED)
-  aesSecret, err := localPrivateKeyED.ECDH(publicKeyDH)
+  localPrivateKeyDH, err := ecdh.X25519().GenerateKey(rand.Reader)
   if err != nil {
     return err
   }
-  connection := NewEncryptedConnection(addr, hello.PublicKeyED[:], aesSecret)
-  node.mutex.Lock()
-  node.ipToConnection[addr.String()] = connection
-  node.mutex.Unlock()
+  aesSecret, err := localPrivateKeyDH.ECDH(publicKeyDH)
+  if err != nil {
+    return err
+  }
+  node.incomingConnection <- incomingConnectionInfo{
+    addr: addr,
+    publicKeyED: hello.PublicKeyED[:],
+    aesSecret: aesSecret,
+    publicKeyDH: localPrivateKeyDH.PublicKey().Bytes(),
+  }
   return nil
 }
 
@@ -272,10 +362,14 @@ func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *Hand
   switch packet.Type() {
   case PacketHello:
     hello := packet.(*Hello)
-    err := handshake.onHello(hello, addr, &node.ipToConnection, &node.ipToHandshake)
+    encryptedConnection, err := handshake.onHello(hello, addr)
     if err != nil {
       return err
     }
+    node.mutex.Lock()
+    node.ipToConnection[addr.String()] = encryptedConnection
+    delete(node.ipToHandshake, addr.String())
+    node.mutex.Unlock()
   case PacketHelloRetry:
     helloRetry := packet.(*HelloRetry)
     node.mutex.Lock()
@@ -303,21 +397,15 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *Encrypte
     switch packet.Type() {
     case PacketData:
       data := packet.(*Data)
-      closed, consumableBuffer, err := conn.onData(data, nil, node.udpConn)
+      closed, err := conn.onData(data, node.udpConn)
       if err != nil {
 	return err
       }
       if closed {
+	close(conn.consumableBuffer)
 	node.mutex.Lock()
 	delete(node.ipToConnection, addr.String())
 	node.mutex.Unlock()
-      }
-      if consumableBuffer != nil {
-	node.consumableBuffer <- consumable{
-	  buffer: consumableBuffer,
-	  addr: addr,
-	  streamID: data.StreamID,
-	}
       }
     case PacketIntroduction:
       intro := packet.(*Introduction)
@@ -386,3 +474,4 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
   }
   return nil
 }
+

@@ -1,4 +1,4 @@
-package v0
+package gop2p
 
 import "sync"
 
@@ -41,8 +41,6 @@ func (s *stream) close() Packet {
 }
 
 func (s *stream) onSend(data []byte) []Packet {
-  s.mutex.Lock()
-  defer s.mutex.Unlock()
   segments := segments(data)
   packets := make([]Packet, len(segments))
   s.mutex.Lock()
@@ -158,7 +156,7 @@ func addDataToBuffer(buffer []*Data, transaction *Data) []*Data {
 
 func updateRxBufferConsumableAckNumber(buffer []*Data, consumableBuffer []byte, ackNumber uint32) ([]*Data, []byte, uint32) {
   if consumableBuffer == nil {
-    consumableBuffer = make([]byte, 0, 1024)
+    consumableBuffer = make([]byte, 0, MaxDataSize)
   }
   k := 0
   for ; k < len(buffer) && buffer[k].SequenceNumber == ackNumber && buffer[k].DataType & DataFinished == 0; k += 1 {
@@ -179,7 +177,7 @@ func segments(buffer []byte) [][]byte {
   start := 0
   segments := make([][]byte, 0)
   for start < len(buffer) {
-    end := start + MaxPacketSize
+    end := start + MaxDataSize
     if end > len(buffer) {
       end = len(buffer)
     }

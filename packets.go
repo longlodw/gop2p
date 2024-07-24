@@ -1,6 +1,7 @@
-package v0
+package gop2p
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 )
@@ -35,7 +36,7 @@ type Data struct {
 
 const (
   Version = 0
-  MaxPacketSize = 1198
+  MaxPacketSize = 1184
 )
 
 const (
@@ -66,13 +67,14 @@ const (
   DataAckNumberSize = 4
   DataHeaderSize = DataIDSize + DataTypeSize + DataSequenceNumberSize + DataAckNumberSize
   DataLengthSize = 2
-  MaxDataSize = MaxPacketSize - HeaderSize - DataHeaderSize - DataLengthSize
+  MaxDataSize = MaxPacketSize - 16
 )
 
 const (
   VersionSize = 1
   PacketTypeSize = 1
-  HeaderSize = VersionSize + PacketTypeSize
+  PaddingSize = 1
+  HeaderSize = VersionSize + PacketTypeSize + PaddingSize
   HelloSize = PublicKeyDHSize + PublicKeyEDSize + SignatureSize + CookieSize
   IntroductionSize = 1 + PublicKeyDHSize + PublicKeyEDSize + SignatureSize + IPV6Size + PortSize 
 )
@@ -115,21 +117,22 @@ func nextPacketIndex(packets []Packet, start int) (int, int) {
   return len(packets), bufferLen
 }
 
-func DeserializePackets(buffers []byte) ([]Packet, error) {
+func DeserializePackets(buffer []byte) ([]Packet, error) {
   packets := make([]Packet, 0)
-  for len(buffers) > 0 {
-    packet, n, err := DeserializePacket(buffers)
+  for k := 0; k < len(buffer); {
+    packet, n, err := DeserializePacket(buffer[k:])
     if err != nil {
       return packets, err
     }
+    end := k + n
     packets = append(packets, packet)
-    buffers = buffers[n:]
+    k = end
   }
   return packets, nil
 }
 
 func DeserializePacket(buffer []byte) (Packet, int, error) {
-  if len(buffer) < 2 {
+  if len(buffer) < HeaderSize {
     return nil, -1, errors.New("Buffer too small")
   }
 
@@ -138,17 +141,22 @@ func DeserializePacket(buffer []byte) (Packet, int, error) {
   }
 
   packetType := buffer[1]
-  buffer = buffer[2:]
+  paddingSize := buffer[2]
+  buffer = buffer[HeaderSize:]
 
   switch packetType {
   case PacketHello:
-    return DeserializeHello(buffer)
+    p, n, err := DeserializeHello(buffer)
+    return p, n + HeaderSize + int(paddingSize), err
   case PacketHelloRetry:
-    return DeserializeHelloRetry(buffer)
+    p, n, err := DeserializeHelloRetry(buffer)
+    return p, n + HeaderSize + int(paddingSize), err
   case PacketIntroduction:
-    return DeserializeIntroduction(buffer)
+    p, n, err := DeserializeIntroduction(buffer)
+    return p, n + HeaderSize + int(paddingSize), err
   case PacketData:
-    return DeserializeData(buffer)
+    p, n, err := DeserializeData(buffer)
+    return p, n + HeaderSize + int(paddingSize), err
   default:
     return nil, -1, errors.New("Invalid packet type")
   }
@@ -242,7 +250,7 @@ func DeserializeData(buffer []byte) (*Data, int, error) {
     Data: buffer[:dataLength],
   }
 
-  return data, DataHeaderSize + len(data.Data), nil
+  return data, DataHeaderSize + DataLengthSize + len(data.Data), nil
 }
 
 func (hello *Hello) Type() byte {
@@ -255,7 +263,7 @@ func (hello *Hello) Serialize(buffer []byte) (int, error) {
   }
 
   n := 0
-  n += copy(buffer, []byte{Version, PacketHello})
+  n += copy(buffer, []byte{Version, PacketHello, 0})
   n += copy(buffer[n:], hello.PublicKeyDH[:])
   n += copy(buffer[n:], hello.PublicKeyED[:])
   n += copy(buffer[n:], hello.Signature[:])
@@ -278,7 +286,7 @@ func (helloRetry *HelloRetry) Serialize(buffer []byte) (int, error) {
   }
 
   n := 0
-  n += copy(buffer, []byte{Version, PacketHelloRetry})
+  n += copy(buffer, []byte{Version, PacketHelloRetry, 0})
   n += copy(buffer[n:], helloRetry.Cookie[:])
 
   return n, nil
@@ -298,7 +306,8 @@ func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
   }
 
   n := 0
-  n += copy(buffer, []byte{Version, PacketIntroduction})
+  var paddingSize uint8 = 10
+  n += copy(buffer, []byte{Version, PacketIntroduction, paddingSize})
   buffer[n] = introduction.Flags
   n += 1
   n += copy(buffer[n:], introduction.PublicKeyDH[:])
@@ -307,12 +316,15 @@ func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
   n += copy(buffer[n:], introduction.IP[:])
   binary.BigEndian.PutUint16(buffer[n:], introduction.Port)
   n += PortSize
+  rand.Read(buffer[n:n+int(paddingSize)])
+  n += int(paddingSize)
 
   return n, nil
 }
 
 func (introduction *Introduction) BufferSize() int {
-  return IntroductionSize + HeaderSize
+  const paddingSize = 10
+  return IntroductionSize + HeaderSize + paddingSize
 }
 
 func (data *Data) Type() byte {
@@ -325,7 +337,7 @@ func (data *Data) Serialize(buffer []byte) (int, error) {
   }
 
   n := 0
-  n += copy(buffer, []byte{Version, PacketData})
+  n += copy(buffer, []byte{Version, PacketData, 3})
   buffer[n] = data.StreamID
   n += 1
   buffer[n] = data.DataType
@@ -335,21 +347,24 @@ func (data *Data) Serialize(buffer []byte) (int, error) {
   binary.BigEndian.PutUint32(buffer[n:], data.AckNumber)
   n += DataAckNumberSize
 
-  if data.DataType == DataFinished {
+  if data.DataType & DataFinished != 0 {
     return n, nil
   }
 
   binary.BigEndian.PutUint16(buffer[n:], uint16(len(data.Data)))
   n += DataLengthSize
   n += copy(buffer[n:], data.Data)
-
+  buffer[2] = byte((16 - n % 16) % 16)
+  rand.Read(buffer[n:n+int(buffer[2])])
+  n += int(buffer[2])
   return n, nil
 }
 
 func (data *Data) BufferSize() int {
-  if data.DataType == DataFinished {
-    return DataHeaderSize + HeaderSize
+  if data.DataType & DataFinished != 0 {
+    return DataHeaderSize + HeaderSize + 3
   }
-  return DataHeaderSize + DataLengthSize + len(data.Data) + HeaderSize
+  required := DataHeaderSize + DataLengthSize + len(data.Data) + HeaderSize
+  return required + (16 - required % 16) % 16
 }
 

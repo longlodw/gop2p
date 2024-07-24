@@ -1,10 +1,10 @@
-package v0
+package gop2p
 
 import (
-  "net"
-  "sync"
-  "crypto/aes"
-  "errors"
+	"crypto/aes"
+	"errors"
+	"net"
+	"sync"
 )
 
 type EncryptedConnection struct {
@@ -14,6 +14,12 @@ type EncryptedConnection struct {
   streams map[byte]*stream
   txStream *MergeStream[Packet]
   rwMutex sync.RWMutex
+  consumableBuffer chan consumable
+}
+
+type consumable struct {
+  buffer []byte
+  streamID byte
 }
 
 func NewEncryptedConnection(addr *net.UDPAddr, peerPublicKeyED []byte, secretAES []byte) *EncryptedConnection {
@@ -23,6 +29,7 @@ func NewEncryptedConnection(addr *net.UDPAddr, peerPublicKeyED []byte, secretAES
     secretAES: secretAES,
     streams: make(map[byte]*stream),
     txStream: NewMergeStream[Packet](),
+    consumableBuffer: make(chan consumable, 8),
   }
 }
 
@@ -31,7 +38,9 @@ func (connection *EncryptedConnection) encrypt(des []byte, plain []byte) error {
   if err != nil {
     return err
   }
-  block.Encrypt(des, plain)
+  for k := 0; k < len(plain); k += aes.BlockSize {
+    block.Encrypt(des[k:], plain[k:])
+  }
   return nil
 }
 
@@ -40,7 +49,9 @@ func (connection *EncryptedConnection) decrypt(des []byte, cipher []byte) error 
   if err != nil {
     return err
   }
-  block.Decrypt(des, cipher)
+  for k := 0; k < len(cipher); k += aes.BlockSize {
+    block.Decrypt(des[k:], cipher[k:])
+  }
   return nil
 }
 
@@ -173,7 +184,7 @@ func (connection *EncryptedConnection) onSend(data []byte, streamID byte, udpCon
   return nil
 }
 
-func (connection *EncryptedConnection) onData(data *Data, consumableBuffer []byte, udpConn *net.UDPConn) (bool, []byte, error) {
+func (connection *EncryptedConnection) onData(data *Data, udpConn *net.UDPConn) (bool, error) {
   connectionClosed := false
   connection.rwMutex.RLock()
   stream, ok := connection.streams[data.StreamID]
@@ -185,7 +196,7 @@ func (connection *EncryptedConnection) onData(data *Data, consumableBuffer []byt
     connection.streams[data.StreamID] = stream
     connection.rwMutex.Unlock()
   }
-  closed, packets, consumableBuffer := stream.onData(data, consumableBuffer)
+  closed, packets, consumableBuffer := stream.onData(data, nil)
   if closed {
     connection.rwMutex.Lock()
     delete(connection.streams, data.StreamID)
@@ -194,20 +205,23 @@ func (connection *EncryptedConnection) onData(data *Data, consumableBuffer []byt
     }
     connection.rwMutex.Unlock()
   }
+  if consumableBuffer != nil {
+    connection.consumableBuffer <- consumable{consumableBuffer, data.StreamID}
+  }
   if packets == nil {
-    return connectionClosed, consumableBuffer, nil
+    return connectionClosed, nil
   }
   packets = connection.txStream.Add(packets)
   if packets == nil {
-    return connectionClosed, consumableBuffer, nil
+    return connectionClosed, nil
   }
   bytesToSend := SerializePackets(packets)
   for _, b := range bytesToSend {
     connection.encrypt(b, b)
     _, err := udpConn.WriteToUDP(b, connection.addr)
     if err != nil {
-      return connectionClosed, consumableBuffer, err
+      return connectionClosed, err
     }
   }
-  return connectionClosed, consumableBuffer, nil
+  return connectionClosed, nil
 }
