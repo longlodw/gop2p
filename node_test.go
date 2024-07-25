@@ -119,14 +119,17 @@ func TestConnectViaPeer(t *testing.T) {
   if node1 == nil || udpConn1 == nil || addr1 == nil {
     t.Fatal("Failed to create node1")
   }
+  defer udpConn1.Close()
   node2, udpConn2, addr2 := makeTestNode(p2)
   if node2 == nil || udpConn2 == nil || addr2 == nil {
     t.Fatal("Failed to create node2")
   }
+  defer udpConn2.Close()
   node3, udpConn3, addr3 := makeTestNode(p3)
   if node3 == nil || udpConn3 == nil || addr3 == nil {
     t.Fatal("Failed to create node3")
   }
+  defer udpConn3.Close()
   stopChan := make(chan struct{})
   errChan := make(chan error)
   defer close(stopChan)
