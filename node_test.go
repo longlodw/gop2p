@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-
 func makeTestNode(port int) (*Node, *net.UDPConn, *net.UDPAddr) {
   addr := &net.UDPAddr{IP: net.IPv6loopback, Port: port}
   udpConn, err := net.ListenUDP("udp6", addr)
@@ -110,4 +109,74 @@ func TestSendRecv(t *testing.T) {
   }
   udpConn1.Close()
   udpConn2.Close()
+}
+
+func TestConnectViaPeer(t *testing.T) {
+  p1 := 1234
+  p2 := 1235
+  p3 := 1236
+  node1, udpConn1, addr1 := makeTestNode(p1)
+  if node1 == nil || udpConn1 == nil || addr1 == nil {
+    t.Fatal("Failed to create node1")
+  }
+  node2, udpConn2, addr2 := makeTestNode(p2)
+  if node2 == nil || udpConn2 == nil || addr2 == nil {
+    t.Fatal("Failed to create node2")
+  }
+  node3, udpConn3, addr3 := makeTestNode(p3)
+  if node3 == nil || udpConn3 == nil || addr3 == nil {
+    t.Fatal("Failed to create node3")
+  }
+  stopChan := make(chan struct{})
+  errChan := make(chan error)
+  defer close(stopChan)
+  defer close(errChan)
+
+  go func() {
+    err := node3.Connect(context.TODO(), addr1)
+    if err != nil {
+      errChan <- err
+      return
+    }
+    _, err = node3.Accept(context.TODO())
+    if err != nil {
+      errChan <- err
+      return
+    }
+    stopChan <- struct{}{}
+  }()
+  go func() {
+    err := node2.Connect(context.TODO(), addr1)
+    if err != nil {
+      errChan <- err
+      return
+    }
+    err = node2.ConnectViaPeer(context.TODO(), addr3, addr1)
+    if err != nil {
+      errChan <- err
+      return
+    }
+  }()
+  
+  for k := 0; k < 2; k++ {
+    select {
+    case err := <-errChan:
+      t.Fatal(err)
+    default:
+      _, err := node1.Accept(context.TODO())
+      if err != nil {
+	t.Fatal(err)
+      }
+    }
+  }
+  err := node1.Run()
+  if err != nil {
+    t.Fatal(err)
+  }
+  select {
+  case err := <-errChan:
+    t.Fatal(err)
+  case <-stopChan:
+    return
+  }
 }

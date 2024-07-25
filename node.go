@@ -457,7 +457,7 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
   if !ok {
     return errors.New("unknown destination address")
   }
-  intro.Flags &= IntroductionIsSourceAddress
+  intro.Flags |= IntroductionIsSourceAddress
   intro.IP = [16]byte(source.IP.To16())
   intro.Port = uint16(source.Port)
   packets := conn.txStream.Add([]Packet{intro})
