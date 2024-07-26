@@ -1,8 +1,8 @@
 # p2p packet
 
-| verion | type | payload |
-|--------|------|---------|
-| 1      | 1    | 0..1196 |
+| verion | type | padding length | payload | padding |
+|--------|------|----------------|---------|---------|
+| 1      | 1    |1               | 0..1181 | 0..15   |
 
   ## payload packet
 
@@ -24,19 +24,26 @@
     |-------|----------------------------------|----------------------------|-----------|--------------|------|
     | 1     | 32                               | 32                         | 64        | 16           | 2    |
 
+    flags bit mask:
+      1: contain source ipv6 address present
+
     ### data (encrypted)
 
       #### data unfinished
 
       | id | type | sequence number | ack number | length | data    |
       |----|------|-----------------|------------|--------|---------|
-      | 1  | 1    | 4               | 4          | 2      | 0..1184 |
+      | 1  | 1    | 4               | 4          | 2      | 0..1179 |
 
       #### data finished
 
       | id | type | sequence number | ack number |
       |----|------|-----------------|------------|
       | 1  | 1    | 4               | 4          |
+
+      type bit mask:
+        1: contains ack
+        2: finish
 
 # 2p2 protocol
 

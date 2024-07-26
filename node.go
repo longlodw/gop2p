@@ -253,6 +253,7 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
       return err
     }
   }
+  node.udpConn.WriteToUDP([]byte{255}, addr)
   for node.IsConnected(addr) == false {
     select {
     case <-ctx.Done():
