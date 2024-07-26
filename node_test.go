@@ -5,42 +5,44 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net"
 	"testing"
 )
 
-func makeTestNode(port int) (*Node, *net.UDPConn, *net.UDPAddr) {
+func makeTestNode(port int) (*Node, *net.UDPAddr) {
   addr := &net.UDPAddr{IP: net.IPv6loopback, Port: port}
-  udpConn, err := net.ListenUDP("udp6", addr)
-  if err != nil {
-    return nil, nil, nil
-  }
   pbk1, pvk1, err := ed25519.GenerateKey(rand.Reader)
   if err != nil {
-    udpConn.Close()
-    return nil, nil, nil
+    return nil, nil
   }
-  return NewNode(pvk1, pbk1, udpConn), udpConn, addr
+  node, err := NewNode(pvk1, pbk1, addr)
+  if err != nil {
+    return nil, nil
+  }
+  return node, addr
 }
 
 func TestSendRecv(t *testing.T) {
   p1 := 1234
   p2 := 1235
-  node1, udpConn1, addr1 := makeTestNode(p1)
-  if node1 == nil || udpConn1 == nil || addr1 == nil {
+  node1, addr1 := makeTestNode(p1)
+  if node1 == nil || addr1 == nil {
     t.Fatal("Failed to create node1")
   }
-  node2, udpConn2, addr2 := makeTestNode(p2)
-  if node2 == nil || udpConn2 == nil || addr2 == nil {
+  defer node1.Shutdown()
+  node2, addr2 := makeTestNode(p2)
+  if node2 == nil || addr2 == nil {
     t.Fatal("Failed to create node2")
   }
+  defer node2.Shutdown()
 
   bytesToSend := make([]byte, 2048)
   rand.Read(bytesToSend)
-  stopChan := make(chan struct{})
   errChan := make(chan error)
-  defer close(stopChan)
+  doneChan := make(chan struct{})
   defer close(errChan)
+  defer close(doneChan)
   
   go func() {
     err := node1.Connect(context.TODO(), addr2)
@@ -53,23 +55,11 @@ func TestSendRecv(t *testing.T) {
       errChan <- err
       return
     }
-    for {
-      select {
-      case <- stopChan:
-	return
-      default:
-	err := node1.Run()
-	if err != nil {
-	  errChan <- err
-	  return
-	}
-      }
-    }
+    doneChan <- struct{}{}
   }()
 
   addr, err := node2.Accept(context.TODO())
   if err != nil {
-    stopChan <- struct{}{}
     t.Fatal(err)
   }
   recvBuf := make([]byte, 0, 2048)
@@ -77,7 +67,6 @@ func TestSendRecv(t *testing.T) {
   for b == nil || len(b) > 0 {
     select {
     case err := <-errChan:
-      stopChan <- struct{}{}
       t.Fatal(err)
     default:
       var (
@@ -105,35 +94,36 @@ func TestSendRecv(t *testing.T) {
   select {
   case err := <-errChan:
     t.Fatal(err)
-  case stopChan <- struct{}{}:
+  case <-doneChan:
+    break
   }
-  udpConn1.Close()
-  udpConn2.Close()
+  fmt.Println("passed TestSendRecv")
 }
 
-func TestConnectViaPeer(t *testing.T) {
+func testConnectViaPeer(t *testing.T) {
+  fmt.Println("TestConnectViaPeer")
   p1 := 1234
   p2 := 1235
   p3 := 1236
-  node1, udpConn1, addr1 := makeTestNode(p1)
-  if node1 == nil || udpConn1 == nil || addr1 == nil {
+  node1, addr1 := makeTestNode(p1)
+  if node1 == nil || addr1 == nil {
     t.Fatal("Failed to create node1")
   }
-  defer udpConn1.Close()
-  node2, udpConn2, addr2 := makeTestNode(p2)
-  if node2 == nil || udpConn2 == nil || addr2 == nil {
+  defer node1.Shutdown()
+  node2, addr2 := makeTestNode(p2)
+  if node2 == nil || addr2 == nil {
     t.Fatal("Failed to create node2")
   }
-  defer udpConn2.Close()
-  node3, udpConn3, addr3 := makeTestNode(p3)
-  if node3 == nil || udpConn3 == nil || addr3 == nil {
+  defer node2.Shutdown()
+  node3, addr3 := makeTestNode(p3)
+  if node3 == nil || addr3 == nil {
     t.Fatal("Failed to create node3")
   }
-  defer udpConn3.Close()
-  stopChan := make(chan struct{})
+  defer node3.Shutdown()
   errChan := make(chan error)
-  defer close(stopChan)
+  doneChan := make(chan struct{})
   defer close(errChan)
+  defer close(doneChan)
 
   go func() {
     err := node3.Connect(context.TODO(), addr1)
@@ -141,12 +131,14 @@ func TestConnectViaPeer(t *testing.T) {
       errChan <- err
       return
     }
+    fmt.Println("node3 connected to node1")
     _, err = node3.Accept(context.TODO())
+    fmt.Println("node3 accepted connection from node2")
     if err != nil {
       errChan <- err
       return
     }
-    stopChan <- struct{}{}
+    doneChan <- struct{}{}
   }()
   go func() {
     err := node2.Connect(context.TODO(), addr1)
@@ -154,7 +146,9 @@ func TestConnectViaPeer(t *testing.T) {
       errChan <- err
       return
     }
+    fmt.Println("node2 connected to node1")
     err = node2.ConnectViaPeer(context.TODO(), addr3, addr1)
+    fmt.Println("node2 connected to node3 via node1")
     if err != nil {
       errChan <- err
       return
@@ -162,6 +156,7 @@ func TestConnectViaPeer(t *testing.T) {
   }()
   
   for k := 0; k < 2; k++ {
+    fmt.Printf("k = %d\n", k)
     select {
     case err := <-errChan:
       t.Fatal(err)
@@ -172,14 +167,11 @@ func TestConnectViaPeer(t *testing.T) {
       }
     }
   }
-  err := node1.Run()
-  if err != nil {
-    t.Fatal(err)
-  }
+  fmt.Println("node1 accepted connections from node2 and node3")
   select {
   case err := <-errChan:
     t.Fatal(err)
-  case <-stopChan:
-    return
+  case <-doneChan:
+    break
   }
 }

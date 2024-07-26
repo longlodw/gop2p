@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"runtime"
 	"sync"
+	"time"
 )
 
 type Node struct {
@@ -19,6 +21,8 @@ type Node struct {
   ipToHandshake map[string]*Handshake
   mutex sync.RWMutex
   incomingConnection chan incomingConnectionInfo
+  runErrors chan error
+  stopChan chan struct{}
 }
 
 type incomingConnectionInfo struct {
@@ -28,16 +32,20 @@ type incomingConnectionInfo struct {
   publicKeyDH []byte
 }
 
-func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpConn *net.UDPConn) *Node {
+func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpAddr *net.UDPAddr) (*Node, error) {
   randomSecret := make([]byte, 32)
   n, err := rand.Read(randomSecret)
   if err != nil {
-    return nil
+    return nil, err
   }
   if n != 32 {
-    return nil
+    return nil, errors.New("Failed to generate random secret")
   }
-  return &Node{
+  udpConn, err := net.ListenUDP("udp6", udpAddr)
+  if err != nil {
+    return nil, err
+  }
+  node := &Node{
     randomSecret: randomSecret,
     localPublicKeyED: localPublicKeyED,
     localPrivateKeyED: localPrivateKeyED,
@@ -45,7 +53,25 @@ func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpConn *net.UDP
     ipToConnection: make(map[string]*EncryptedConnection),
     ipToHandshake: make(map[string]*Handshake),
     incomingConnection: make(chan incomingConnectionInfo, 8),
+    runErrors: make(chan error),
+    stopChan: make(chan struct{}),
   }
+  go func() {
+    for {
+      select {
+      case <-node.stopChan:
+	return
+      default:
+	node.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	err := node.run()
+	if timeoutErr, ok := err.(net.Error); err == nil || (ok && timeoutErr.Timeout()) {
+	    continue
+	}
+	node.runErrors <- err
+      }
+    }
+  }()
+  return node, nil
 }
 
 func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
@@ -93,6 +119,23 @@ func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
   node.mutex.Unlock()
 }
 
+func (node *Node) Shutdown() {
+  node.mutex.Lock()
+  for _, conn := range node.ipToConnection {
+    close(conn.consumableBuffer)
+  }
+  node.ipToConnection = make(map[string]*EncryptedConnection)
+  node.mutex.Unlock()
+  for len(node.runErrors) > 0 {
+    <-node.runErrors
+  }
+  node.stopChan <- struct{}{}
+  node.udpConn.Close()
+  close(node.stopChan)
+  close(node.incomingConnection)
+  close(node.runErrors)
+}
+
 func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
@@ -125,50 +168,44 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
     select {
     case <-ctx.Done():
       return errors.New("Context cancelled")
+    case err := <-node.runErrors:
+      return err
     default:
-      err := node.Run()
-      if err != nil {
-	return err
-      }
+      runtime.Gosched()
     }
   }
   return nil
 }
 
 func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
-  for {
-    select {
-    case <-ctx.Done():
-      return nil, errors.New("Context cancelled")
-    case incoming, ok := <-node.incomingConnection:
-      if !ok {
-	return nil, errors.New("Channel closed")
-      }
-      helloReply := &Hello{
-	PublicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
-	PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
-	Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(incoming.publicKeyDH, node.localPublicKeyED...))),
-      }
-      bytesToSend := make([]byte, helloReply.BufferSize())
-      n, err := helloReply.Serialize(bytesToSend)
-      if err != nil {
-	return nil, err
-      }
-      _, err = node.udpConn.WriteToUDP(bytesToSend[:n], incoming.addr)
-      if err != nil {
-	return nil, err
-      }
-      connection := NewEncryptedConnection(incoming.addr, incoming.publicKeyED[:], incoming.aesSecret)
-      node.mutex.Lock()
-      node.ipToConnection[incoming.addr.String()] = connection
-      node.mutex.Unlock()
-      return incoming.addr, nil
-    default:
-      err := node.Run()
-      if err != nil {
-	return nil, err
-      }
+  select {
+  case <-ctx.Done():
+    return nil, errors.New("Context cancelled")
+  case err := <-node.runErrors:
+    return nil, err
+  case incoming, ok := <-node.incomingConnection:
+    if !ok {
+      return nil, errors.New("Channel closed")
     }
+    helloReply := &Hello{
+      PublicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
+      PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
+      Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(incoming.publicKeyDH, node.localPublicKeyED...))),
+    }
+    bytesToSend := make([]byte, helloReply.BufferSize())
+    n, err := helloReply.Serialize(bytesToSend)
+    if err != nil {
+      return nil, err
+    }
+    _, err = node.udpConn.WriteToUDP(bytesToSend[:n], incoming.addr)
+    if err != nil {
+      return nil, err
+    }
+    connection := NewEncryptedConnection(incoming.addr, incoming.publicKeyED[:], incoming.aesSecret)
+    node.mutex.Lock()
+    node.ipToConnection[incoming.addr.String()] = connection
+    node.mutex.Unlock()
+    return incoming.addr, nil
   }
 }
 
@@ -212,11 +249,10 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
     select {
     case <-ctx.Done():
       return errors.New("Context cancelled")
+    case err := <-node.runErrors:
+      return err
     default:
-      err := node.Run()
-      if err != nil {
-	return err
-      }
+      runtime.Gosched()
     }
   }
   return nil
@@ -236,58 +272,60 @@ func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
   if ok {
     return connection.peerPublicKeyED, nil
   }
-  return nil, errors.New("No connection")
+  return nil, errors.New("Connection not established")
 }
 
 func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, error) {
-  for {
-    select {
-    case <-ctx.Done():
-      return nil, 0, errors.New("Context cancelled")
-    default:
-      node.mutex.RLock()
-      conn, ok := node.ipToConnection[addr.String()]
-      node.mutex.RUnlock()
-      if !ok {
-	return nil, 0, errors.New("Connection not established")
-      }
-      select {
-      case consumable, ok := <-conn.consumableBuffer:
-	if !ok {
-	  return nil, 0, errors.New("Channel closed")
-	}
-	return consumable.buffer, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
-      default:
-	err := node.Run()
-	if err != nil {
-	  return nil, 0, err
-	}
-      }
+  node.mutex.RLock()
+  conn, ok := node.ipToConnection[addr.String()]
+  node.mutex.RUnlock()
+  if !ok {
+    return nil, 0, errors.New("Connection not established")
+  }
+  select {
+  case <-ctx.Done():
+    return nil, 0, errors.New("Context cancelled")
+  case err := <-node.runErrors:
+    return nil, 0, err
+  case consumable, ok := <-conn.consumableBuffer:
+    if !ok {
+      return nil, 0, errors.New("Channel closed")
     }
+    return consumable.buffer, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
   }
 }
 
 func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
-  node.mutex.RLock()
-  conn, ok := node.ipToConnection[addr.String()]
-  node.mutex.RUnlock()
-  if !ok {
-    return errors.New("Connection not established")
+  select {
+  case err := <-node.runErrors:
+    return err
+  default:
+    node.mutex.RLock()
+    conn, ok := node.ipToConnection[addr.String()]
+    node.mutex.RUnlock()
+    if !ok {
+      return errors.New("Connection not established")
+    }
+    return conn.ack(streamID, node.udpConn)   
   }
-  return conn.ack(streamID, node.udpConn)
 }
 
 func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
-  node.mutex.RLock()
-  conn, ok := node.ipToConnection[addr.String()]
-  node.mutex.RUnlock()
-  if !ok {
-    return errors.New("Connection not established")
+  select {
+  case err := <- node.runErrors:
+    return err
+  default:
+    node.mutex.RLock()
+    conn, ok := node.ipToConnection[addr.String()]
+    node.mutex.RUnlock()
+    if !ok {
+      return errors.New("Connection not established")
+    }
+    return conn.onSend(data, streamID, node.udpConn)   
   }
-  return conn.onSend(data, streamID, node.udpConn)
 }
 
-func (node *Node) Run() error {
+func (node *Node) run() error {
   buf := make([]byte, MaxPacketSize)
   n, addr, err := node.udpConn.ReadFromUDP(buf)
   if err != nil {
