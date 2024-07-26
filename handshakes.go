@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"net"
 )
 
@@ -28,7 +27,7 @@ func NewHandshake() *Handshake {
 
 func (handShake *Handshake) onHello(packet *Hello, source *net.UDPAddr) (*EncryptedConnection, error) {
   if !verifyHello(packet.PublicKeyDH[:], packet.PublicKeyED[:], packet.Signature[:]) {
-    return nil, errors.New("Invalid signature")
+    return nil, newInvalidPacketError("Invalid signature")
   }
   publicKeyDH, err := ecdh.X25519().NewPublicKey(packet.PublicKeyDH[:])
   if err != nil {

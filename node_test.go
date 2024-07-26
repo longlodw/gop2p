@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"fmt"
 	"net"
 	"testing"
 )
@@ -97,11 +96,9 @@ func TestSendRecv(t *testing.T) {
   case <-doneChan:
     break
   }
-  fmt.Println("passed TestSendRecv")
 }
 
-func testConnectViaPeer(t *testing.T) {
-  fmt.Println("TestConnectViaPeer")
+func TestConnectViaPeer(t *testing.T) {
   p1 := 1234
   p2 := 1235
   p3 := 1236
@@ -131,9 +128,7 @@ func testConnectViaPeer(t *testing.T) {
       errChan <- err
       return
     }
-    fmt.Println("node3 connected to node1")
     _, err = node3.Accept(context.TODO())
-    fmt.Println("node3 accepted connection from node2")
     if err != nil {
       errChan <- err
       return
@@ -146,9 +141,7 @@ func testConnectViaPeer(t *testing.T) {
       errChan <- err
       return
     }
-    fmt.Println("node2 connected to node1")
     err = node2.ConnectViaPeer(context.TODO(), addr3, addr1)
-    fmt.Println("node2 connected to node3 via node1")
     if err != nil {
       errChan <- err
       return
@@ -156,7 +149,6 @@ func testConnectViaPeer(t *testing.T) {
   }()
   
   for k := 0; k < 2; k++ {
-    fmt.Printf("k = %d\n", k)
     select {
     case err := <-errChan:
       t.Fatal(err)
@@ -167,7 +159,6 @@ func testConnectViaPeer(t *testing.T) {
       }
     }
   }
-  fmt.Println("node1 accepted connections from node2 and node3")
   select {
   case err := <-errChan:
     t.Fatal(err)

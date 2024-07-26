@@ -3,7 +3,6 @@ package gop2p
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"errors"
 )
 
 type Hello struct {
@@ -133,11 +132,11 @@ func DeserializePackets(buffer []byte) ([]Packet, error) {
 
 func DeserializePacket(buffer []byte) (Packet, int, error) {
   if len(buffer) < HeaderSize {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   if buffer[0] != Version {
-    return nil, -1, errors.New("Invalid version")
+    return nil, -1, newInvalidPacketError("Invalid version")
   }
 
   packetType := buffer[1]
@@ -158,13 +157,13 @@ func DeserializePacket(buffer []byte) (Packet, int, error) {
     p, n, err := DeserializeData(buffer)
     return p, n + HeaderSize + int(paddingSize), err
   default:
-    return nil, -1, errors.New("Invalid packet type")
+    return nil, -1, newInvalidPacketError("Invalid packet type")
   }
 }
 
 func DeserializeHello(buffer []byte) (*Hello, int, error) {
   if len(buffer) < HelloSize {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   hello := &Hello{}
@@ -181,7 +180,7 @@ func DeserializeHello(buffer []byte) (*Hello, int, error) {
 
 func DeserializeHelloRetry(buffer []byte) (*HelloRetry, int, error) {
   if len(buffer) < CookieSize {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   helloRetry := &HelloRetry{}
@@ -191,7 +190,7 @@ func DeserializeHelloRetry(buffer []byte) (*HelloRetry, int, error) {
 
 func DeserializeIntroduction(buffer []byte) (*Introduction, int, error) {
   if len(buffer) < IntroductionSize {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   introduction := &Introduction{}
@@ -211,7 +210,7 @@ func DeserializeIntroduction(buffer []byte) (*Introduction, int, error) {
 
 func DeserializeData(buffer []byte) (*Data, int, error) {
   if len(buffer) < DataHeaderSize {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   streamID := buffer[0]
@@ -239,7 +238,7 @@ func DeserializeData(buffer []byte) (*Data, int, error) {
   buffer = buffer[DataLengthSize:]
 
   if len(buffer) < int(dataLength) {
-    return nil, -1, errors.New("Buffer too small")
+    return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
   data := &Data{
@@ -259,7 +258,7 @@ func (hello *Hello) Type() byte {
 
 func (hello *Hello) Serialize(buffer []byte) (int, error) {
   if len(buffer) < hello.BufferSize() {
-    return -1, errors.New("Buffer too small")
+    return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
@@ -282,7 +281,7 @@ func (helloRetry *HelloRetry) Type() byte {
 
 func (helloRetry *HelloRetry) Serialize(buffer []byte) (int, error) {
   if len(buffer) < helloRetry.BufferSize() {
-    return -1, errors.New("Buffer too small")
+    return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
@@ -302,7 +301,7 @@ func (introduction *Introduction) Type() byte {
 
 func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
   if len(buffer) < introduction.BufferSize() {
-    return -1, errors.New("Buffer too small")
+    return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
@@ -333,7 +332,7 @@ func (data *Data) Type() byte {
 
 func (data *Data) Serialize(buffer []byte) (int, error) {
   if len(buffer) < data.BufferSize() {
-    return -1, errors.New("Buffer too small")
+    return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0

@@ -64,8 +64,16 @@ func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpAddr *net.UDP
       default:
 	node.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	err := node.run()
-	if timeoutErr, ok := err.(net.Error); err == nil || (ok && timeoutErr.Timeout()) {
-	    continue
+	if err == nil {
+	  continue
+	}
+	timeoutErr, ok := err.(net.Error)
+	if ok && timeoutErr.Timeout() {
+	  continue
+	}
+	_, ok = err.(InvalidPacketError)
+	if ok {
+	  continue
 	}
 	node.runErrors <- err
       }
@@ -79,7 +87,7 @@ func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
   conn, ok := node.ipToConnection[addr.String()]
   node.mutex.RUnlock()
   if !ok {
-    return errors.New("Connection not established")
+    return newConnectionNotEstablishedError(addr.String())
   }
   closed, err := conn.closeStream(node.udpConn, streamID)
   if closed {
@@ -99,7 +107,7 @@ func (node *Node) ClosePeer(addr *net.UDPAddr) error {
   conn, ok := node.ipToConnection[addr.String()]
   node.mutex.RUnlock()
   if !ok {
-    return errors.New("Connection not established")
+    return newConnectionNotEstablishedError(addr.String())
   }
   err := conn.close(node.udpConn)
   close(conn.consumableBuffer)
@@ -140,7 +148,7 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
-    return errors.New("Connection already established")
+    return newConnectionAlreadyEstablishedError(addr.String())
   }
   handshake, ok := node.ipToHandshake[addr.String()]
   node.mutex.RUnlock()
@@ -167,7 +175,7 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   for node.IsConnected(addr) == false {
     select {
     case <-ctx.Done():
-      return errors.New("Context cancelled")
+      return newCancelledError()
     case err := <-node.runErrors:
       return err
     default:
@@ -180,12 +188,12 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
 func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
   select {
   case <-ctx.Done():
-    return nil, errors.New("Context cancelled")
+    return nil, newCancelledError()
   case err := <-node.runErrors:
     return nil, err
   case incoming, ok := <-node.incomingConnection:
     if !ok {
-      return nil, errors.New("Channel closed")
+      return nil, newChannelClosedError()
     }
     helloReply := &Hello{
       PublicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
@@ -213,12 +221,12 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
-    return errors.New("Connection already established")
+    return newConnectionAlreadyEstablishedError(addr.String())
   }
   conn, ok := node.ipToConnection[intermediate.String()]
   node.mutex.RUnlock()
   if !ok {
-    return errors.New("Connection not established")
+    return newConnectionNotEstablishedError(intermediate.String())
   }
   handshake := NewHandshake()
 
@@ -248,7 +256,7 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
   for node.IsConnected(addr) == false {
     select {
     case <-ctx.Done():
-      return errors.New("Context cancelled")
+      return newCancelledError()
     case err := <-node.runErrors:
       return err
     default:
@@ -272,7 +280,7 @@ func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
   if ok {
     return connection.peerPublicKeyED, nil
   }
-  return nil, errors.New("Connection not established")
+  return nil, newConnectionNotEstablishedError(addr.String())
 }
 
 func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, error) {
@@ -280,16 +288,16 @@ func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, er
   conn, ok := node.ipToConnection[addr.String()]
   node.mutex.RUnlock()
   if !ok {
-    return nil, 0, errors.New("Connection not established")
+    return nil, 0, newConnectionAlreadyEstablishedError(addr.String())
   }
   select {
   case <-ctx.Done():
-    return nil, 0, errors.New("Context cancelled")
+    return nil, 0, newCancelledError()
   case err := <-node.runErrors:
     return nil, 0, err
   case consumable, ok := <-conn.consumableBuffer:
     if !ok {
-      return nil, 0, errors.New("Channel closed")
+      return nil, 0, newChannelClosedError()
     }
     return consumable.buffer, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
   }
@@ -304,7 +312,7 @@ func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
     conn, ok := node.ipToConnection[addr.String()]
     node.mutex.RUnlock()
     if !ok {
-      return errors.New("Connection not established")
+      return newConnectionNotEstablishedError(addr.String())
     }
     return conn.ack(streamID, node.udpConn)   
   }
@@ -319,7 +327,7 @@ func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
     conn, ok := node.ipToConnection[addr.String()]
     node.mutex.RUnlock()
     if !ok {
-      return errors.New("Connection not established")
+      return newConnectionNotEstablishedError(addr.String())
     }
     return conn.onSend(data, streamID, node.udpConn)   
   }
@@ -352,13 +360,13 @@ func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
     return err
   }
   if packet.Type() != PacketHello {
-    return errors.New("Invalid packet type")
+    return newInvalidPacketError("Expected hello packet")
   }
   hello := packet.(*Hello)
   cookie := computeCookie(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:], node.randomSecret)
   if hello.Cookie != cookie {
     if !verifyHello(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:]) {
-      return nil
+      return newInvalidPacketError("Invalid signature")
     }
     retry := &HelloRetry{
       Cookie: cookie,
@@ -417,7 +425,7 @@ func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *Hand
       return err
     }
   default:
-    return errors.New("Invalid packet type")
+    return newInvalidPacketError("Expected hello or hello retry packet")
   }
   return nil
 }
@@ -452,7 +460,7 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *Encrypte
 	return err
       }
     default:
-      return errors.New("Invalid packet type")
+      return newInvalidPacketError("Expected data or introduction packet")
     }
   }
   return nil
@@ -468,14 +476,14 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
   node.mutex.RUnlock()
   if intro.Flags & IntroductionIsSourceAddress != 0 {
     if ok {
-      return errors.New("Connection already established")
+      return newInvalidPacketError("Connection already established")
     }
     _, ok := node.ipToHandshake[addr.String()]
     if ok {
-      return errors.New("Handshake already in progress")
+      return newInvalidPacketError("Unknown address")
     }
     if !verifyHello(intro.PublicKeyDH[:], intro.PublicKeyED[:], intro.Signature[:]) {
-      return errors.New("Invalid signature")
+      return newInvalidPacketError("Invalid signature")
     }
     cookie := computeCookie(intro.PublicKeyDH[:], intro.PublicKeyED[:], intro.Signature[:], node.randomSecret)
     helloRetry := &HelloRetry{
@@ -493,7 +501,7 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
     return nil
   }
   if !ok {
-    return errors.New("unknown destination address")
+    return newInvalidPacketError("Connection not established")
   }
   intro.Flags |= IntroductionIsSourceAddress
   intro.IP = [16]byte(source.IP.To16())

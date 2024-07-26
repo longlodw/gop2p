@@ -2,7 +2,6 @@ package gop2p
 
 import (
 	"crypto/aes"
-	"errors"
 	"net"
 	"sync"
 )
@@ -60,7 +59,7 @@ func (connection *EncryptedConnection) ack(streamID byte, udpConn *net.UDPConn) 
   stream, ok := connection.streams[streamID]
   connection.rwMutex.RUnlock()
   if !ok {
-    return errors.New("Stream not found")
+    return newStreamNotFoundError(streamID)
   }
   packet := stream.ack()
   packets := connection.txStream.Add([]Packet{packet})
@@ -83,7 +82,7 @@ func (connection *EncryptedConnection) tryAck(streamID byte, udpConn *net.UDPCon
   stream, ok := connection.streams[streamID]
   connection.rwMutex.RUnlock()
   if !ok {
-    return errors.New("Stream not found")
+    return newStreamNotFoundError(streamID)
   }
   packet := stream.tryAck()
   if packet == nil {
