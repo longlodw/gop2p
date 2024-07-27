@@ -3,6 +3,7 @@ mkShell {
   packages = with pkgs; [
     nodejs
     go
+    gotools
   ];
   shellHook = '''';
   nativeBuildInputs = with pkgs; [];
