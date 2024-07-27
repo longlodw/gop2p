@@ -1,3 +1,26 @@
+// Package gop2p provides a simple API for establishing encrypted peer-to-peer connections over UDP.
+// Each node may have multiple connections with other nodes, each connection may have multiple streams.
+// gop2p uses udp6 for all connections, with reliable transmission and encryption on each stream.
+//
+// Example usage:
+//   node, err := NewNode(localPrivateKeyED, localPublicKeyED, udpAddr)
+//   if err != nil {
+//     log.Fatal(err)
+//   }
+//   ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+//   defer cancel()
+//   peerAddr, err := node.Accept(ctx)
+//   if err != nil {
+//     log.Fatal(err)
+//   }
+//   buf, streamID, err := node.Recv(ctx, peerAddr)
+//   if err != nil {
+//     log.Fatal(err)
+//   }
+//   err = node.Send([]byte("Hello"), peerAddr, streamID)
+//   if err != nil {
+//     log.Fatal(err)
+//   }
 package gop2p
 
 import (
@@ -12,6 +35,8 @@ import (
 	"time"
 )
 
+// Node represents a peer-to-peer node.
+// It is used to establish encrypted connections with other nodes.
 type Node struct {
   randomSecret []byte
   localPublicKeyED []byte
@@ -32,6 +57,7 @@ type incomingConnectionInfo struct {
   publicKeyDH []byte
 }
 
+// NewNode creates a new Node.
 func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpAddr *net.UDPAddr) (*Node, error) {
   randomSecret := make([]byte, 32)
   n, err := rand.Read(randomSecret)
@@ -82,6 +108,7 @@ func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpAddr *net.UDP
   return node, nil
 }
 
+// CloseStream closes a stream with a peer.
 func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
   node.mutex.RLock()
   conn, ok := node.ipToConnection[addr.String()]
@@ -102,6 +129,7 @@ func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
   return nil
 }
 
+// ClosePeer gracefully closes a connection with a peer.
 func (node *Node) ClosePeer(addr *net.UDPAddr) error {
   node.mutex.RLock()
   conn, ok := node.ipToConnection[addr.String()]
@@ -117,6 +145,7 @@ func (node *Node) ClosePeer(addr *net.UDPAddr) error {
   return err
 }
 
+// ClosePeerForce closes a connection with a peer without sending a close packet.
 func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
   node.mutex.Lock()
   conn, ok := node.ipToConnection[addr.String()]
@@ -127,6 +156,7 @@ func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
   node.mutex.Unlock()
 }
 
+// Shutdown closes all connections and stops the node.
 func (node *Node) Shutdown() {
   node.mutex.Lock()
   for _, conn := range node.ipToConnection {
@@ -144,6 +174,7 @@ func (node *Node) Shutdown() {
   close(node.runErrors)
 }
 
+// Connect establishes a connection with a peer.
 func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
@@ -185,6 +216,7 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   return nil
 }
 
+// Accept waits for a connection from a peer, returns the peer's address and error.
 func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
   select {
   case <-ctx.Done():
@@ -217,6 +249,7 @@ func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
   }
 }
 
+// ConnectViaPeer establishes a connection with a peer through an intermediate peer.
 func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, intermediate *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
@@ -267,6 +300,7 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
   return nil
 }
 
+// IsConnected returns true if a connection with a peer is established.
 func (node *Node) IsConnected(addr *net.UDPAddr) bool {
   node.mutex.RLock()
   _, ok := node.ipToConnection[addr.String()]
@@ -274,6 +308,7 @@ func (node *Node) IsConnected(addr *net.UDPAddr) bool {
   return ok
 }
 
+// GetPeerPublicKey returns the public key of a peer.
 func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
   node.mutex.RLock()
   connection, ok := node.ipToConnection[addr.String()]
@@ -284,6 +319,7 @@ func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
   return nil, newConnectionNotEstablishedError(addr.String())
 }
 
+// Recv receives data from a specific peer, returns the data, stream ID and an error.
 func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, error) {
   node.mutex.RLock()
   conn, ok := node.ipToConnection[addr.String()]
@@ -304,6 +340,7 @@ func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, er
   }
 }
 
+// Ack sends an acknowledgment to a peer on a specific stream, which should promt the peer to send more data.
 func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
   select {
   case err := <-node.runErrors:
@@ -319,6 +356,7 @@ func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
   }
 }
 
+// Send sends data to a specific peer on a specific channel, returns an error.
 func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
   select {
   case err := <- node.runErrors:
