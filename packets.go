@@ -66,7 +66,7 @@ const (
   DataAckNumberSize = 4
   DataHeaderSize = DataIDSize + DataTypeSize + DataSequenceNumberSize + DataAckNumberSize
   DataLengthSize = 2
-  MaxDataSize = MaxPacketSize - 16
+  MaxDataSize = MaxPacketSize - DataHeaderSize - DataLengthSize - HeaderSize
 )
 
 const (
