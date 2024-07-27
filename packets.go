@@ -5,32 +5,32 @@ import (
 	"encoding/binary"
 )
 
-type Hello struct {
-  PublicKeyDH [PublicKeyDHSize]byte
-  PublicKeyED [PublicKeyEDSize]byte
-  Signature [SignatureSize]byte
-  Cookie [CookieSize]byte
+type hello struct {
+  publicKeyDH [PublicKeyDHSize]byte
+  publicKeyED [PublicKeyEDSize]byte
+  signature [SignatureSize]byte
+  cookie [CookieSize]byte
 }
 
-type HelloRetry struct {
-  Cookie [CookieSize]byte
+type helloRetry struct {
+  cookie [CookieSize]byte
 }
 
-type Introduction struct {
-  Flags byte
-  PublicKeyDH [PublicKeyDHSize]byte
-  PublicKeyED [PublicKeyEDSize]byte
-  Signature [SignatureSize]byte
-  IP [IPV6Size]byte
-  Port uint16
+type introduction struct {
+  flags byte
+  publicKeyDH [PublicKeyDHSize]byte
+  publicKeyED [PublicKeyEDSize]byte
+  signature [SignatureSize]byte
+  ip [IPV6Size]byte
+  port uint16
 }
 
-type Data struct {
-  StreamID byte
-  DataType byte
-  SequenceNumber uint32
-  AckNumber uint32
-  Data []byte
+type data struct {
+  streamID byte
+  dataType byte
+  sequenceNumber uint32
+  ackNumber uint32
+  data []byte
 }
 
 const (
@@ -82,13 +82,13 @@ const (
   IntroductionIsSourceAddress = 1
 )
 
-type Packet interface {
+type packet interface {
   Type() byte
   Serialize([]byte) (int, error)
   BufferSize() int
 }
 
-func SerializePackets(packets []Packet) [][]byte {
+func serializePackets(packets []packet) [][]byte {
   start := 0
   serializedBuffers := make([][]byte, 0)
   for start < len(packets) {
@@ -105,7 +105,7 @@ func SerializePackets(packets []Packet) [][]byte {
   return serializedBuffers
 }
 
-func nextPacketIndex(packets []Packet, start int) (int, int) {
+func nextPacketIndex(packets []packet, start int) (int, int) {
   bufferLen := 0
   for i := start; i < len(packets); i++ {
     if packets[i].BufferSize() + bufferLen > MaxPacketSize {
@@ -116,10 +116,10 @@ func nextPacketIndex(packets []Packet, start int) (int, int) {
   return len(packets), bufferLen
 }
 
-func DeserializePackets(buffer []byte) ([]Packet, error) {
-  packets := make([]Packet, 0)
+func deserializePackets(buffer []byte) ([]packet, error) {
+  packets := make([]packet, 0)
   for k := 0; k < len(buffer); {
-    packet, n, err := DeserializePacket(buffer[k:])
+    packet, n, err := deserializePacket(buffer[k:])
     if err != nil {
       return packets, err
     }
@@ -130,7 +130,7 @@ func DeserializePackets(buffer []byte) ([]Packet, error) {
   return packets, nil
 }
 
-func DeserializePacket(buffer []byte) (Packet, int, error) {
+func deserializePacket(buffer []byte) (packet, int, error) {
   if len(buffer) < HeaderSize {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
@@ -145,70 +145,70 @@ func DeserializePacket(buffer []byte) (Packet, int, error) {
 
   switch packetType {
   case PacketHello:
-    p, n, err := DeserializeHello(buffer)
+    p, n, err := deserializeHello(buffer)
     return p, n + HeaderSize + int(paddingSize), err
   case PacketHelloRetry:
-    p, n, err := DeserializeHelloRetry(buffer)
+    p, n, err := deserializeHelloRetry(buffer)
     return p, n + HeaderSize + int(paddingSize), err
   case PacketIntroduction:
-    p, n, err := DeserializeIntroduction(buffer)
+    p, n, err := deserializeIntroduction(buffer)
     return p, n + HeaderSize + int(paddingSize), err
   case PacketData:
-    p, n, err := DeserializeData(buffer)
+    p, n, err := deserializeData(buffer)
     return p, n + HeaderSize + int(paddingSize), err
   default:
     return nil, -1, newInvalidPacketError("Invalid packet type")
   }
 }
 
-func DeserializeHello(buffer []byte) (*Hello, int, error) {
+func deserializeHello(buffer []byte) (*hello, int, error) {
   if len(buffer) < HelloSize {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
-  hello := &Hello{}
-  copy(hello.PublicKeyDH[:], buffer[:PublicKeyDHSize])
+  hello := &hello{}
+  copy(hello.publicKeyDH[:], buffer[:PublicKeyDHSize])
   buffer = buffer[PublicKeyDHSize:]
-  copy(hello.PublicKeyED[:], buffer[:PublicKeyEDSize])
+  copy(hello.publicKeyED[:], buffer[:PublicKeyEDSize])
   buffer = buffer[PublicKeyEDSize:]
-  copy(hello.Signature[:], buffer[:SignatureSize])
+  copy(hello.signature[:], buffer[:SignatureSize])
   buffer = buffer[SignatureSize:]
-  copy(hello.Cookie[:], buffer[:CookieSize])
+  copy(hello.cookie[:], buffer[:CookieSize])
 
   return hello, HelloSize, nil
 }
 
-func DeserializeHelloRetry(buffer []byte) (*HelloRetry, int, error) {
+func deserializeHelloRetry(buffer []byte) (*helloRetry, int, error) {
   if len(buffer) < CookieSize {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
-  helloRetry := &HelloRetry{}
-  copy(helloRetry.Cookie[:], buffer[:CookieSize])
+  helloRetry := &helloRetry{}
+  copy(helloRetry.cookie[:], buffer[:CookieSize])
   return helloRetry, CookieSize, nil
 }
 
-func DeserializeIntroduction(buffer []byte) (*Introduction, int, error) {
+func deserializeIntroduction(buffer []byte) (*introduction, int, error) {
   if len(buffer) < IntroductionSize {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
-  introduction := &Introduction{}
-  introduction.Flags = buffer[0]
+  introduction := &introduction{}
+  introduction.flags = buffer[0]
   buffer = buffer[1:]
-  copy(introduction.PublicKeyDH[:], buffer[:PublicKeyDHSize])
+  copy(introduction.publicKeyDH[:], buffer[:PublicKeyDHSize])
   buffer = buffer[PublicKeyDHSize:]
-  copy(introduction.PublicKeyED[:], buffer[:PublicKeyEDSize])
+  copy(introduction.publicKeyED[:], buffer[:PublicKeyEDSize])
   buffer = buffer[PublicKeyEDSize:]
-  copy(introduction.Signature[:], buffer[:SignatureSize])
+  copy(introduction.signature[:], buffer[:SignatureSize])
   buffer = buffer[SignatureSize:]
-  copy(introduction.IP[:], buffer[:IPV6Size])
+  copy(introduction.ip[:], buffer[:IPV6Size])
   buffer = buffer[IPV6Size:]
-  introduction.Port = binary.BigEndian.Uint16(buffer)
+  introduction.port = binary.BigEndian.Uint16(buffer)
   return introduction, IntroductionSize, nil
 }
 
-func DeserializeData(buffer []byte) (*Data, int, error) {
+func deserializeData(buffer []byte) (*data, int, error) {
   if len(buffer) < DataHeaderSize {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
@@ -225,12 +225,12 @@ func DeserializeData(buffer []byte) (*Data, int, error) {
   buffer = buffer[DataAckNumberSize:]
 
   if dataType == DataFinished {
-    return &Data{
-      StreamID: streamID,
-      DataType: dataType,
-      SequenceNumber: sequenceNumber,
-      AckNumber: ackNumber,
-      Data: nil,
+    return &data{
+      streamID: streamID,
+      dataType: dataType,
+      sequenceNumber: sequenceNumber,
+      ackNumber: ackNumber,
+      data: nil,
     }, DataHeaderSize, nil
   }
 
@@ -241,65 +241,65 @@ func DeserializeData(buffer []byte) (*Data, int, error) {
     return nil, -1, newInvalidPacketError("Buffer too small")
   }
 
-  data := &Data{
-    StreamID: streamID,
-    DataType: dataType,
-    SequenceNumber: sequenceNumber,
-    AckNumber: ackNumber,
-    Data: buffer[:dataLength],
+  data := &data{
+    streamID: streamID,
+    dataType: dataType,
+    sequenceNumber: sequenceNumber,
+    ackNumber: ackNumber,
+    data: buffer[:dataLength],
   }
 
-  return data, DataHeaderSize + DataLengthSize + len(data.Data), nil
+  return data, DataHeaderSize + DataLengthSize + len(data.data), nil
 }
 
-func (hello *Hello) Type() byte {
+func (hello *hello) Type() byte {
   return PacketHello
 }
 
-func (hello *Hello) Serialize(buffer []byte) (int, error) {
+func (hello *hello) Serialize(buffer []byte) (int, error) {
   if len(buffer) < hello.BufferSize() {
     return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
   n += copy(buffer, []byte{Version, PacketHello, 0})
-  n += copy(buffer[n:], hello.PublicKeyDH[:])
-  n += copy(buffer[n:], hello.PublicKeyED[:])
-  n += copy(buffer[n:], hello.Signature[:])
-  n += copy(buffer[n:], hello.Cookie[:])
+  n += copy(buffer[n:], hello.publicKeyDH[:])
+  n += copy(buffer[n:], hello.publicKeyED[:])
+  n += copy(buffer[n:], hello.signature[:])
+  n += copy(buffer[n:], hello.cookie[:])
 
   return n, nil
 }
 
-func (hello *Hello) BufferSize() int {
+func (hello *hello) BufferSize() int {
   return HelloSize + HeaderSize
 }
 
-func (helloRetry *HelloRetry) Type() byte {
+func (helloRetry *helloRetry) Type() byte {
   return PacketHelloRetry
 }
 
-func (helloRetry *HelloRetry) Serialize(buffer []byte) (int, error) {
+func (helloRetry *helloRetry) Serialize(buffer []byte) (int, error) {
   if len(buffer) < helloRetry.BufferSize() {
     return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
   n += copy(buffer, []byte{Version, PacketHelloRetry, 0})
-  n += copy(buffer[n:], helloRetry.Cookie[:])
+  n += copy(buffer[n:], helloRetry.cookie[:])
 
   return n, nil
 }
 
-func (helloRetry *HelloRetry) BufferSize() int {
+func (helloRetry *helloRetry) BufferSize() int {
   return CookieSize + HeaderSize
 }
 
-func (introduction *Introduction) Type() byte {
+func (introduction *introduction) Type() byte {
   return PacketIntroduction
 }
 
-func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
+func (introduction *introduction) Serialize(buffer []byte) (int, error) {
   if len(buffer) < introduction.BufferSize() {
     return -1, newInvalidPacketError("Buffer too small")
   }
@@ -307,13 +307,13 @@ func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
   n := 0
   var paddingSize uint8 = 10
   n += copy(buffer, []byte{Version, PacketIntroduction, paddingSize})
-  buffer[n] = introduction.Flags
+  buffer[n] = introduction.flags
   n += 1
-  n += copy(buffer[n:], introduction.PublicKeyDH[:])
-  n += copy(buffer[n:], introduction.PublicKeyED[:])
-  n += copy(buffer[n:], introduction.Signature[:])
-  n += copy(buffer[n:], introduction.IP[:])
-  binary.BigEndian.PutUint16(buffer[n:], introduction.Port)
+  n += copy(buffer[n:], introduction.publicKeyDH[:])
+  n += copy(buffer[n:], introduction.publicKeyED[:])
+  n += copy(buffer[n:], introduction.signature[:])
+  n += copy(buffer[n:], introduction.ip[:])
+  binary.BigEndian.PutUint16(buffer[n:], introduction.port)
   n += PortSize
   rand.Read(buffer[n:n+int(paddingSize)])
   n += int(paddingSize)
@@ -321,49 +321,49 @@ func (introduction *Introduction) Serialize(buffer []byte) (int, error) {
   return n, nil
 }
 
-func (introduction *Introduction) BufferSize() int {
+func (introduction *introduction) BufferSize() int {
   const paddingSize = 10
   return IntroductionSize + HeaderSize + paddingSize
 }
 
-func (data *Data) Type() byte {
+func (data *data) Type() byte {
   return PacketData
 }
 
-func (data *Data) Serialize(buffer []byte) (int, error) {
+func (data *data) Serialize(buffer []byte) (int, error) {
   if len(buffer) < data.BufferSize() {
     return -1, newInvalidPacketError("Buffer too small")
   }
 
   n := 0
   n += copy(buffer, []byte{Version, PacketData, 3})
-  buffer[n] = data.StreamID
+  buffer[n] = data.streamID
   n += 1
-  buffer[n] = data.DataType
+  buffer[n] = data.dataType
   n += 1
-  binary.BigEndian.PutUint32(buffer[n:], data.SequenceNumber)
+  binary.BigEndian.PutUint32(buffer[n:], data.sequenceNumber)
   n += DataSequenceNumberSize
-  binary.BigEndian.PutUint32(buffer[n:], data.AckNumber)
+  binary.BigEndian.PutUint32(buffer[n:], data.ackNumber)
   n += DataAckNumberSize
 
-  if data.DataType & DataFinished != 0 {
+  if data.dataType & DataFinished != 0 {
     return n, nil
   }
 
-  binary.BigEndian.PutUint16(buffer[n:], uint16(len(data.Data)))
+  binary.BigEndian.PutUint16(buffer[n:], uint16(len(data.data)))
   n += DataLengthSize
-  n += copy(buffer[n:], data.Data)
+  n += copy(buffer[n:], data.data)
   buffer[2] = byte((16 - n % 16) % 16)
   rand.Read(buffer[n:n+int(buffer[2])])
   n += int(buffer[2])
   return n, nil
 }
 
-func (data *Data) BufferSize() int {
-  if data.DataType & DataFinished != 0 {
+func (data *data) BufferSize() int {
+  if data.dataType & DataFinished != 0 {
     return DataHeaderSize + HeaderSize + 3
   }
-  required := DataHeaderSize + DataLengthSize + len(data.Data) + HeaderSize
+  required := DataHeaderSize + DataLengthSize + len(data.data) + HeaderSize
   return required + (16 - required % 16) % 16
 }
 

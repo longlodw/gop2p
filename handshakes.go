@@ -8,45 +8,45 @@ import (
 	"net"
 )
 
-type Handshake struct {
+type handshake struct {
   privateKeyDH *ecdh.PrivateKey
   publicKeyDH *ecdh.PublicKey
 }
 
-func NewHandshake() *Handshake {
+func newHandshake() *handshake {
   privateKeyDH, err := ecdh.X25519().GenerateKey(rand.Reader)
   if err != nil {
     return nil
   }
   publicKeyDH := privateKeyDH.PublicKey()
-  return &Handshake{
+  return &handshake{
     privateKeyDH: privateKeyDH,
     publicKeyDH: publicKeyDH,
   }
 }
 
-func (handShake *Handshake) onHello(packet *Hello, source *net.UDPAddr) (*EncryptedConnection, error) {
-  if !verifyHello(packet.PublicKeyDH[:], packet.PublicKeyED[:], packet.Signature[:]) {
+func (hs *handshake) onHello(packet *hello, source *net.UDPAddr) (*encryptedConnection, error) {
+  if !verifyHello(packet.publicKeyDH[:], packet.publicKeyED[:], packet.signature[:]) {
     return nil, newInvalidPacketError("Invalid signature")
   }
-  publicKeyDH, err := ecdh.X25519().NewPublicKey(packet.PublicKeyDH[:])
+  publicKeyDH, err := ecdh.X25519().NewPublicKey(packet.publicKeyDH[:])
   if err != nil {
     return nil ,err
   }
-  aesSecret, err := handShake.privateKeyDH.ECDH(publicKeyDH)
+  aesSecret, err := hs.privateKeyDH.ECDH(publicKeyDH)
   if err != nil {
     return nil, err
   }
-  return NewEncryptedConnection(source, packet.PublicKeyED[:], aesSecret), nil
+  return newEncryptedConnection(source, packet.publicKeyED[:], aesSecret), nil
 }
 
-func (handshake *Handshake) onHelloRetry(packet *HelloRetry, source *net.UDPAddr, udpConn *net.UDPConn, localPrivateKeyED []byte, localPublicKeyED []byte) error {
-  publicKeyDHBytes := handshake.publicKeyDH.Bytes()
-  hello := &Hello{
-    Cookie: packet.Cookie,
-    PublicKeyDH: [PublicKeyDHSize]byte(publicKeyDHBytes),
-    PublicKeyED: [PublicKeyEDSize]byte(localPublicKeyED),
-    Signature: [SignatureSize]byte(ed25519.Sign(localPrivateKeyED, append(publicKeyDHBytes, localPublicKeyED...))),
+func (hs *handshake) onHelloRetry(packet *helloRetry, source *net.UDPAddr, udpConn *net.UDPConn, localPrivateKeyED []byte, localPublicKeyED []byte) error {
+  publicKeyDHBytes := hs.publicKeyDH.Bytes()
+  hello := &hello{
+    cookie: packet.cookie,
+    publicKeyDH: [PublicKeyDHSize]byte(publicKeyDHBytes),
+    publicKeyED: [PublicKeyEDSize]byte(localPublicKeyED),
+    signature: [SignatureSize]byte(ed25519.Sign(localPrivateKeyED, append(publicKeyDHBytes, localPublicKeyED...))),
   }
   buf := make([]byte, hello.BufferSize())
   n, err := hello.Serialize(buf)

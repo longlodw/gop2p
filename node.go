@@ -17,8 +17,8 @@ type Node struct {
   localPublicKeyED []byte
   localPrivateKeyED []byte
   udpConn *net.UDPConn
-  ipToConnection map[string]*EncryptedConnection
-  ipToHandshake map[string]*Handshake
+  ipToConnection map[string]*encryptedConnection
+  ipToHandshake map[string]*handshake
   mutex sync.RWMutex
   incomingConnection chan incomingConnectionInfo
   runErrors chan error
@@ -50,8 +50,8 @@ func NewNode(localPrivateKeyED []byte, localPublicKeyED []byte, udpAddr *net.UDP
     localPublicKeyED: localPublicKeyED,
     localPrivateKeyED: localPrivateKeyED,
     udpConn: udpConn,
-    ipToConnection: make(map[string]*EncryptedConnection),
-    ipToHandshake: make(map[string]*Handshake),
+    ipToConnection: make(map[string]*encryptedConnection),
+    ipToHandshake: make(map[string]*handshake),
     incomingConnection: make(chan incomingConnectionInfo, 8),
     runErrors: make(chan error),
     stopChan: make(chan struct{}),
@@ -132,7 +132,7 @@ func (node *Node) Shutdown() {
   for _, conn := range node.ipToConnection {
     close(conn.consumableBuffer)
   }
-  node.ipToConnection = make(map[string]*EncryptedConnection)
+  node.ipToConnection = make(map[string]*encryptedConnection)
   node.mutex.Unlock()
   for len(node.runErrors) > 0 {
     <-node.runErrors
@@ -153,15 +153,15 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   handshake, ok := node.ipToHandshake[addr.String()]
   node.mutex.RUnlock()
   if !ok {
-    handshake = NewHandshake()
+    handshake = newHandshake()
     node.mutex.Lock()
     node.ipToHandshake[addr.String()] = handshake
     node.mutex.Unlock()
   }
-  hello := &Hello{
-    PublicKeyDH: [32]byte(handshake.publicKeyDH.Bytes()),
-    PublicKeyED: [32]byte(node.localPublicKeyED),
-    Signature: [64]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
+  hello := &hello{
+    publicKeyDH: [32]byte(handshake.publicKeyDH.Bytes()),
+    publicKeyED: [32]byte(node.localPublicKeyED),
+    signature: [64]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
   }
   bytesToSend := make([]byte, hello.BufferSize())
   n, err := hello.Serialize(bytesToSend)
@@ -195,10 +195,10 @@ func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
     if !ok {
       return nil, newChannelClosedError()
     }
-    helloReply := &Hello{
-      PublicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
-      PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
-      Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(incoming.publicKeyDH, node.localPublicKeyED...))),
+    helloReply := &hello{
+      publicKeyDH: [PublicKeyDHSize]byte(incoming.publicKeyDH),
+      publicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
+      signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(incoming.publicKeyDH, node.localPublicKeyED...))),
     }
     bytesToSend := make([]byte, helloReply.BufferSize())
     n, err := helloReply.Serialize(bytesToSend)
@@ -209,7 +209,7 @@ func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
     if err != nil {
       return nil, err
     }
-    connection := NewEncryptedConnection(incoming.addr, incoming.publicKeyED[:], incoming.aesSecret)
+    connection := newEncryptedConnection(incoming.addr, incoming.publicKeyED[:], incoming.aesSecret)
     node.mutex.Lock()
     node.ipToConnection[incoming.addr.String()] = connection
     node.mutex.Unlock()
@@ -228,24 +228,24 @@ func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, interme
   if !ok {
     return newConnectionNotEstablishedError(intermediate.String())
   }
-  handshake := NewHandshake()
+  handshake := newHandshake()
 
   node.mutex.Lock()
   node.ipToHandshake[addr.String()] = handshake
   node.mutex.Unlock()
-  intro := &Introduction{
-    Flags: 0,
-    IP: [16]byte(addr.IP.To16()),
-    Port: uint16(addr.Port),
-    PublicKeyDH: [PublicKeyDHSize]byte(handshake.publicKeyDH.Bytes()),
-    PublicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
-    Signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
+  intro := &introduction{
+    flags: 0,
+    ip: [16]byte(addr.IP.To16()),
+    port: uint16(addr.Port),
+    publicKeyDH: [PublicKeyDHSize]byte(handshake.publicKeyDH.Bytes()),
+    publicKeyED: [PublicKeyEDSize]byte(node.localPublicKeyED),
+    signature: [SignatureSize]byte(ed25519.Sign(node.localPrivateKeyED, append(handshake.publicKeyDH.Bytes(), node.localPublicKeyED...))),
   }
-  packets := conn.txStream.Add([]Packet{intro})
+  packets := conn.txStream.add([]packet{intro})
   if packets == nil {
     return nil
   }
-  bytesToSend := SerializePackets(packets)
+  bytesToSend := serializePackets(packets)
   for _, b := range bytesToSend {
     conn.encrypt(b, b)
     _, err := node.udpConn.WriteToUDP(b, intermediate)
@@ -356,21 +356,21 @@ func (node *Node) run() error {
 }
 
 func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
-  packet, _, err := DeserializePacket(buf)
+  packet, _, err := deserializePacket(buf)
   if err != nil {
     return err
   }
   if packet.Type() != PacketHello {
     return newInvalidPacketError("Expected hello packet")
   }
-  hello := packet.(*Hello)
-  cookie := computeCookie(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:], node.randomSecret)
-  if hello.Cookie != cookie {
-    if !verifyHello(hello.PublicKeyDH[:], hello.PublicKeyED[:], hello.Signature[:]) {
+  hello := packet.(*hello)
+  cookie := computeCookie(hello.publicKeyDH[:], hello.publicKeyED[:], hello.signature[:], node.randomSecret)
+  if hello.cookie != cookie {
+    if !verifyHello(hello.publicKeyDH[:], hello.publicKeyED[:], hello.signature[:]) {
       return newInvalidPacketError("Invalid signature")
     }
-    retry := &HelloRetry{
-      Cookie: cookie,
+    retry := &helloRetry{
+      cookie: cookie,
     }
     buf := make([]byte, retry.BufferSize())
     _, err := retry.Serialize(buf)
@@ -380,7 +380,7 @@ func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
     _, err = node.udpConn.WriteToUDP(buf, addr)
     return err
   }
-  publicKeyDH, err := ecdh.X25519().NewPublicKey(hello.PublicKeyDH[:])
+  publicKeyDH, err := ecdh.X25519().NewPublicKey(hello.publicKeyDH[:])
   if err != nil {
     return err
   }
@@ -394,21 +394,21 @@ func (node *Node) handleDefault(addr *net.UDPAddr, buf []byte) error {
   }
   node.incomingConnection <- incomingConnectionInfo{
     addr: addr,
-    publicKeyED: hello.PublicKeyED[:],
+    publicKeyED: hello.publicKeyED[:],
     aesSecret: aesSecret,
     publicKeyDH: localPrivateKeyDH.PublicKey().Bytes(),
   }
   return nil
 }
 
-func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *Handshake) error {
-  packet, _, err := DeserializePacket(buf)
+func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *handshake) error {
+  packet, _, err := deserializePacket(buf)
   if err != nil {
     return err
   }
   switch packet.Type() {
   case PacketHello:
-    hello := packet.(*Hello)
+    hello := packet.(*hello)
     encryptedConnection, err := handshake.onHello(hello, addr)
     if err != nil {
       return err
@@ -418,7 +418,7 @@ func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *Hand
     delete(node.ipToHandshake, addr.String())
     node.mutex.Unlock()
   case PacketHelloRetry:
-    helloRetry := packet.(*HelloRetry)
+    helloRetry := packet.(*helloRetry)
     node.mutex.Lock()
     defer node.mutex.Unlock()
     err := handshake.onHelloRetry(helloRetry, addr, node.udpConn, node.localPrivateKeyED, node.localPublicKeyED)
@@ -431,19 +431,19 @@ func (node *Node) handleHandshake(addr *net.UDPAddr, buf []byte, handshake *Hand
   return nil
 }
 
-func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *EncryptedConnection) error {
+func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *encryptedConnection) error {
   err := conn.decrypt(buf, buf)
   if err != nil {
     return err
   }
-  packets, err := DeserializePackets(buf)
+  packets, err := deserializePackets(buf)
   if err != nil {
     return err
   }
   for _, packet := range packets {
     switch packet.Type() {
     case PacketData:
-      data := packet.(*Data)
+      data := packet.(*data)
       closed, err := conn.onData(data, node.udpConn)
       if err != nil {
 	return err
@@ -455,7 +455,7 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *Encrypte
 	node.mutex.Unlock()
       }
     case PacketIntroduction:
-      intro := packet.(*Introduction)
+      intro := packet.(*introduction)
       err := node.handleIntroduction(intro, addr)
       if err != nil {
 	return err
@@ -467,15 +467,15 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *Encrypte
   return nil
 }
 
-func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) error {
+func (node *Node) handleIntroduction(intro *introduction, source *net.UDPAddr) error {
   addr := &net.UDPAddr{
-    IP: intro.IP[:],
-    Port: int(intro.Port),
+    IP: intro.ip[:],
+    Port: int(intro.port),
   }
   node.mutex.RLock()
   conn, ok := node.ipToConnection[addr.String()]
   node.mutex.RUnlock()
-  if intro.Flags & IntroductionIsSourceAddress != 0 {
+  if intro.flags & IntroductionIsSourceAddress != 0 {
     if ok {
       return newInvalidPacketError("Connection already established")
     }
@@ -483,12 +483,12 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
     if ok {
       return newInvalidPacketError("Unknown address")
     }
-    if !verifyHello(intro.PublicKeyDH[:], intro.PublicKeyED[:], intro.Signature[:]) {
+    if !verifyHello(intro.publicKeyDH[:], intro.publicKeyED[:], intro.signature[:]) {
       return newInvalidPacketError("Invalid signature")
     }
-    cookie := computeCookie(intro.PublicKeyDH[:], intro.PublicKeyED[:], intro.Signature[:], node.randomSecret)
-    helloRetry := &HelloRetry{
-      Cookie: cookie,
+    cookie := computeCookie(intro.publicKeyDH[:], intro.publicKeyED[:], intro.signature[:], node.randomSecret)
+    helloRetry := &helloRetry{
+      cookie: cookie,
     }
     buf := make([]byte, helloRetry.BufferSize())
     _, err := helloRetry.Serialize(buf)
@@ -504,14 +504,14 @@ func (node *Node) handleIntroduction(intro *Introduction, source *net.UDPAddr) e
   if !ok {
     return newInvalidPacketError("Connection not established")
   }
-  intro.Flags |= IntroductionIsSourceAddress
-  intro.IP = [16]byte(source.IP.To16())
-  intro.Port = uint16(source.Port)
-  packets := conn.txStream.Add([]Packet{intro})
+  intro.flags |= IntroductionIsSourceAddress
+  intro.ip = [16]byte(source.IP.To16())
+  intro.port = uint16(source.Port)
+  packets := conn.txStream.add([]packet{intro})
   if packets == nil {
     return nil
   }
-  bytesToSend := SerializePackets(packets)
+  bytesToSend := serializePackets(packets)
   for _, b := range bytesToSend {
     conn.encrypt(b, b)
     _, err := node.udpConn.WriteToUDP(b, addr)

@@ -7,8 +7,8 @@ type stream struct {
   sequenceNumber uint32
   ackedSequenceNumber uint32
   ackNumber uint32
-  rxBuffer []*Data
-  txPacketsMap map[uint32]*Data
+  rxBuffer []*data
+  txPacketsMap map[uint32]*data
   mutex sync.Mutex
   needAck bool
   needResend bool
@@ -20,131 +20,131 @@ func newStream(streamID byte) *stream {
     sequenceNumber: 0,
     ackedSequenceNumber: 0,
     ackNumber: 0,
-    rxBuffer: make([]*Data, 0),
-    txPacketsMap: make(map[uint32]*Data),
+    rxBuffer: make([]*data, 0),
+    txPacketsMap: make(map[uint32]*data),
     needAck: false,
   }
 }
 
-func (s *stream) close() Packet {
+func (s *stream) close() packet {
   s.mutex.Lock()
   defer s.mutex.Unlock()
-  packet := &Data{
-    StreamID: s.streamID,
-    SequenceNumber: s.sequenceNumber,
-    AckNumber: s.ackNumber,
-    DataType: DataFinished,
+  packet := &data{
+    streamID: s.streamID,
+    sequenceNumber: s.sequenceNumber,
+    ackNumber: s.ackNumber,
+    dataType: DataFinished,
   }
   s.txPacketsMap[s.sequenceNumber] = packet
   s.sequenceNumber += 1
   return packet
 }
 
-func (s *stream) onSend(data []byte) []Packet {
-  segments := segments(data)
-  packets := make([]Packet, len(segments))
+func (s *stream) onSend(buf []byte) []packet {
+  segments := segments(buf)
+  packets := make([]packet, len(segments))
   s.mutex.Lock()
   defer s.mutex.Unlock()
   for i, segment := range segments {
-    packet := &Data{
-      StreamID: s.streamID,
-      Data: segment,
-      SequenceNumber: s.sequenceNumber,
-      DataType: 0,
+    packet := &data{
+      streamID: s.streamID,
+      data: segment,
+      sequenceNumber: s.sequenceNumber,
+      dataType: 0,
     }
     s.txPacketsMap[s.sequenceNumber] = packet
     s.sequenceNumber += 1
     packets[i] = packet
   }
   if s.needAck {
-    packets[0].(*Data).DataType |= DataAck
+    packets[0].(*data).dataType |= DataAck
     s.needAck = false
-    packets[0].(*Data).AckNumber = s.ackNumber
+    packets[0].(*data).ackNumber = s.ackNumber
   }
   return packets
 }
 
-func (s *stream) ack() Packet {
+func (s *stream) ack() packet {
   s.mutex.Lock()
   defer s.mutex.Unlock()
-  packet := &Data{
-    StreamID: s.streamID,
-    SequenceNumber: s.sequenceNumber,
-    DataType: DataAck,
-    AckNumber: s.ackNumber,
-    Data: make([]byte, 0),
+  packet := &data{
+    streamID: s.streamID,
+    sequenceNumber: s.sequenceNumber,
+    dataType: DataAck,
+    ackNumber: s.ackNumber,
+    data: make([]byte, 0),
   }
   s.needAck = false
   return packet
 }
 
-func (s *stream) tryAck() Packet {
+func (s *stream) tryAck() packet {
   s.mutex.Lock()
   defer s.mutex.Unlock()
   if s.needAck {
-    packet := &Data{
-      StreamID: s.streamID,
-      SequenceNumber: s.sequenceNumber,
-      DataType: DataAck,
-      AckNumber: s.ackNumber,
-      Data: make([]byte, 0),
+    packet := &data{
+      streamID: s.streamID,
+      sequenceNumber: s.sequenceNumber,
+      dataType: DataAck,
+      ackNumber: s.ackNumber,
+      data: make([]byte, 0),
     }
     s.needAck = false
     return packet
   }
   return nil
 }
-func (s *stream) onData(data *Data, consumableBuffer []byte) (bool, []Packet, []byte) {
+func (s *stream) onData(dataPtr *data, consumableBuffer []byte) (bool, []packet, []byte) {
   needResend := false
   needAck := false
   s.mutex.Lock()
-  if s.ackedSequenceNumber < data.AckNumber && data.DataType & DataAck != 0 {
-    for k := s.ackedSequenceNumber; k < data.AckNumber; k += 1 {
+  if s.ackedSequenceNumber < dataPtr.ackNumber && dataPtr.dataType & DataAck != 0 {
+    for k := s.ackedSequenceNumber; k < dataPtr.ackNumber; k += 1 {
       delete(s.txPacketsMap, k)
     }
-    s.ackedSequenceNumber = data.AckNumber
+    s.ackedSequenceNumber = dataPtr.ackNumber
     if s.sequenceNumber < s.ackedSequenceNumber {
       s.sequenceNumber = s.ackedSequenceNumber
     }
     needResend = true
   }
-  if s.ackNumber <= data.SequenceNumber {
-    s.rxBuffer = addDataToBuffer(s.rxBuffer, data)
+  if s.ackNumber <= dataPtr.sequenceNumber {
+    s.rxBuffer = addDataToBuffer(s.rxBuffer, dataPtr)
     s.rxBuffer, consumableBuffer, s.ackNumber = updateRxBufferConsumableAckNumber(s.rxBuffer, consumableBuffer, s.ackNumber)
     needAck = true
   }
-  closed := len(s.rxBuffer) > 0 && s.rxBuffer[0].DataType & DataFinished != 0
+  closed := len(s.rxBuffer) > 0 && s.rxBuffer[0].dataType & DataFinished != 0
   if !needResend {
     s.needAck = s.needAck || needAck
     s.mutex.Unlock()
     return closed, nil, consumableBuffer
   }
-  requestedPacket, ok := s.txPacketsMap[data.AckNumber]
+  requestedPacket, ok := s.txPacketsMap[dataPtr.ackNumber]
   s.mutex.Unlock()
   if !ok {
-    requestedPacket = &Data{
-      StreamID: s.streamID,
-      SequenceNumber: s.ackedSequenceNumber,
-      AckNumber: s.ackNumber,
-      DataType: 0,
-      Data: make([]byte, 0),
+    requestedPacket = &data{
+      streamID: s.streamID,
+      sequenceNumber: s.ackedSequenceNumber,
+      ackNumber: s.ackNumber,
+      dataType: 0,
+      data: make([]byte, 0),
     }
   }
   if needAck {
-    requestedPacket.DataType |= DataAck
+    requestedPacket.dataType |= DataAck
     s.mutex.Lock()
-    requestedPacket.AckNumber = s.ackNumber
+    requestedPacket.ackNumber = s.ackNumber
     s.mutex.Unlock()
   }
-  return closed, []Packet{requestedPacket}, consumableBuffer
+  return closed, []packet{requestedPacket}, consumableBuffer
 }
 
-func addDataToBuffer(buffer []*Data, transaction *Data) []*Data {
+func addDataToBuffer(buffer []*data, transaction *data) []*data {
   k := 0
-  for ; k < len(buffer) && buffer[k].SequenceNumber < transaction.SequenceNumber; k += 1 {}
+  for ; k < len(buffer) && buffer[k].sequenceNumber < transaction.sequenceNumber; k += 1 {}
   if k == len(buffer) {
     buffer = append(buffer, transaction)
-  } else if buffer[k].SequenceNumber == transaction.SequenceNumber {
+  } else if buffer[k].sequenceNumber == transaction.sequenceNumber {
     buffer[k] = transaction
   } else {
     buffer = append(buffer, nil)
@@ -154,14 +154,14 @@ func addDataToBuffer(buffer []*Data, transaction *Data) []*Data {
   return buffer
 }
 
-func updateRxBufferConsumableAckNumber(buffer []*Data, consumableBuffer []byte, ackNumber uint32) ([]*Data, []byte, uint32) {
+func updateRxBufferConsumableAckNumber(buffer []*data, consumableBuffer []byte, ackNumber uint32) ([]*data, []byte, uint32) {
   if consumableBuffer == nil {
     consumableBuffer = make([]byte, 0, MaxDataSize)
   }
   k := 0
-  for ; k < len(buffer) && buffer[k].SequenceNumber == ackNumber && buffer[k].DataType & DataFinished == 0; k += 1 {
-    consumableBuffer = append(consumableBuffer, buffer[k].Data...)
-    if len(buffer[k].Data) != 0 {
+  for ; k < len(buffer) && buffer[k].sequenceNumber == ackNumber && buffer[k].dataType & DataFinished == 0; k += 1 {
+    consumableBuffer = append(consumableBuffer, buffer[k].data...)
+    if len(buffer[k].data) != 0 {
       ackNumber += 1
     }
   }

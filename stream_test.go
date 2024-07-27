@@ -12,22 +12,22 @@ func TestUpdateRxBufferConsumableAckNumber(t *testing.T) {
   ackNumberBytes := [4]byte{}
   rand.Read(ackNumberBytes[:])
   ackNumber := binary.LittleEndian.Uint32(ackNumberBytes[:])
-  buffer := make([]*Data, 16)
+  buffer := make([]*data, 16)
   expectedConsumableBuffer := make([]byte, 0, MaxDataSize)
   for k := 0; k < len(buffer); k += 1 {
     lBytes := [2]byte{}
     rand.Read(lBytes[:])
     l := binary.LittleEndian.Uint16(lBytes[:])
     dataLen := l % MaxDataSize
-    data := make([]byte, dataLen)
-    rand.Read(data)
-    buffer[k] = &Data{
-      StreamID: 0,
-      DataType: 0,
-      SequenceNumber: ackNumber + uint32(k),
-      Data: data,
+    dataBuf := make([]byte, dataLen)
+    rand.Read(dataBuf)
+    buffer[k] = &data{
+      streamID: 0,
+      dataType: 0,
+      sequenceNumber: ackNumber + uint32(k),
+      data: dataBuf,
     }
-    expectedConsumableBuffer = append(expectedConsumableBuffer, data...)
+    expectedConsumableBuffer = append(expectedConsumableBuffer, dataBuf...)
   }
   expectedAckNumber := ackNumber + uint32(len(buffer))
   updatedBuffer, consumableBuffer, updatedAckNumber := updateRxBufferConsumableAckNumber(buffer, nil, ackNumber)
@@ -44,18 +44,18 @@ func TestUpdateRxBufferConsumableAckNumber(t *testing.T) {
 }
 
 func TestAddDataToBuffer(t *testing.T) {
-  transactions := make([]*Data, 16)
+  transactions := make([]*data, 16)
   for k := 0; k < len(transactions); k += 1 {
-    transactions[k] = &Data{
-      StreamID: 0,
-      DataType: 0,
-      SequenceNumber: uint32(k),
+    transactions[k] = &data{
+      streamID: 0,
+      dataType: 0,
+      sequenceNumber: uint32(k),
     }
   }
   mrand.Shuffle(len(transactions), func(i, j int) {
     transactions[i], transactions[j] = transactions[j], transactions[i]
   })
-  buffer := make([]*Data, 0)
+  buffer := make([]*data, 0)
   for _, transaction := range transactions {
     buffer = addDataToBuffer(buffer, transaction)
   }
@@ -63,8 +63,8 @@ func TestAddDataToBuffer(t *testing.T) {
     buffer = addDataToBuffer(buffer, transaction)
   }
   for k := 0; k < len(buffer); k += 1 {
-    if buffer[k].SequenceNumber != uint32(k) {
-      t.Fatalf("Expected %d, got %d", k, buffer[k].SequenceNumber)
+    if buffer[k].sequenceNumber != uint32(k) {
+      t.Fatalf("Expected %d, got %d", k, buffer[k].sequenceNumber)
     }
   }
   t.Logf("Passed addDataToBuffer")
@@ -72,19 +72,19 @@ func TestAddDataToBuffer(t *testing.T) {
 
 func TestOnData(t *testing.T) {
   stream := newStream(0)
-  transactions := make([]*Data, 16)
+  transactions := make([]*data, 16)
   expectedConsumableBuffer := make([]byte, 0, MaxDataSize)
   for k := 0; k < len(transactions); k += 1 {
     dataLen := mrand.Intn(MaxDataSize)
-    data := make([]byte, dataLen)
-    rand.Read(data)
-    transactions[k] = &Data{
-      StreamID: 0,
-      DataType: 0,
-      SequenceNumber: uint32(k),
-      Data: data,
+    dataBuf := make([]byte, dataLen)
+    rand.Read(dataBuf)
+    transactions[k] = &data{
+      streamID: 0,
+      dataType: 0,
+      sequenceNumber: uint32(k),
+      data: dataBuf,
     }
-    expectedConsumableBuffer = append(expectedConsumableBuffer, data...)
+    expectedConsumableBuffer = append(expectedConsumableBuffer, dataBuf...)
   }
   mrand.Shuffle(len(transactions), func(i, j int) {
     transactions[i], transactions[j] = transactions[j], transactions[i]
@@ -93,7 +93,7 @@ func TestOnData(t *testing.T) {
   for _, transaction := range transactions {
     var (
       closed bool
-      packets []Packet
+      packets []packet
     )
     closed, packets, consumableBuffer = stream.onData(transaction, consumableBuffer)
     if closed {
