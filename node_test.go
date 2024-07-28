@@ -44,7 +44,12 @@ func TestSendRecv(t *testing.T) {
   defer close(doneChan)
   
   go func() {
-    err := node1.Connect(context.TODO(), addr2)
+    err := node1.ConnectPeer(context.TODO(), addr2)
+    if err != nil {
+      errChan <- err
+      return
+    }
+    err = node1.OpenStream(addr2, 0)
     if err != nil {
       errChan <- err
       return
@@ -54,35 +59,36 @@ func TestSendRecv(t *testing.T) {
       errChan <- err
       return
     }
-    doneChan <- struct{}{}
+    select {
+    case doneChan <- struct{}{}:
+      return
+    case err := <-errChan:
+      errChan <- err
+      return
+    }
   }()
 
-  addr, err := node2.Accept(context.TODO())
+  addr, err := node2.AcceptPeer(context.TODO())
   if err != nil {
     t.Fatal(err)
   }
-  recvBuf := make([]byte, 0, 2048)
-  var b []byte = nil
-  for b == nil || len(b) > 0 {
+  _, err = node2.AcceptStream(context.TODO(), addr)
+  if err != nil {
+    t.Fatal(err)
+  }
+  recvBuf := make([]byte, 2048)
+  l := 0
+  n := -1
+  for n != 0 {
     select {
     case err := <-errChan:
       t.Fatal(err)
     default:
-      var (
-	s byte
-	err error
-      )
-      b, s, err = node2.Recv(context.TODO(), addr)
+      n, err = node2.Recv(context.TODO(), recvBuf[l:], addr, 0)
       if err != nil {
 	t.Fatal(err)
       }
-      if addr.String() != addr1.String() {
-	t.Fatalf("Expected %s, got %s", addr1.String(), addr.String())
-      }
-      if s != 0 {
-	t.Fatalf("Expected 0, got %d", s)
-      }
-      recvBuf = append(recvBuf, b...)
+      l += n
     }
   }
   if !bytes.Equal(recvBuf, bytesToSend) {
@@ -123,12 +129,12 @@ func TestConnectViaPeer(t *testing.T) {
   defer close(doneChan)
 
   go func() {
-    err := node3.Connect(context.TODO(), addr1)
+    err := node3.ConnectPeer(context.TODO(), addr1)
     if err != nil {
       errChan <- err
       return
     }
-    _, err = node3.Accept(context.TODO())
+    _, err = node3.AcceptPeer(context.TODO())
     if err != nil {
       errChan <- err
       return
@@ -136,12 +142,12 @@ func TestConnectViaPeer(t *testing.T) {
     doneChan <- struct{}{}
   }()
   go func() {
-    err := node2.Connect(context.TODO(), addr1)
+    err := node2.ConnectPeer(context.TODO(), addr1)
     if err != nil {
       errChan <- err
       return
     }
-    err = node2.ConnectViaPeer(context.TODO(), addr3, addr1)
+    err = node2.ConnectPeerViaPeer(context.TODO(), addr3, addr1)
     if err != nil {
       errChan <- err
       return
@@ -153,7 +159,7 @@ func TestConnectViaPeer(t *testing.T) {
     case err := <-errChan:
       t.Fatal(err)
     default:
-      _, err := node1.Accept(context.TODO())
+      _, err := node1.AcceptPeer(context.TODO())
       if err != nil {
 	t.Fatal(err)
       }

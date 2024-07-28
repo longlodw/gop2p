@@ -3,24 +3,33 @@
 // gop2p uses udp6 for all connections, with reliable transmission and encryption on each stream.
 //
 // Example usage:
-//   node, err := NewNode(localPrivateKeyED, localPublicKeyED, udpAddr)
-//   if err != nil {
-//     log.Fatal(err)
-//   }
-//   ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
-//   defer cancel()
-//   peerAddr, err := node.Accept(ctx)
-//   if err != nil {
-//     log.Fatal(err)
-//   }
-//   buf, streamID, err := node.Recv(ctx, peerAddr)
-//   if err != nil {
-//     log.Fatal(err)
-//   }
-//   err = node.Send([]byte("Hello"), peerAddr, streamID)
-//   if err != nil {
-//     log.Fatal(err)
-//   }
+//
+//	node, err := NewNode(localPrivateKeyED, localPublicKeyED, udpAddr)
+//	if err != nil {
+//	  log.Fatal(err)
+//	}
+//	defer node.Shutdown()
+//	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+//	defer cancel()
+//	peerAddr, err := node.Accept(ctx)
+//	if err != nil {
+//	  log.Fatal(err)
+//	}
+//	defer node.ClosePeer(peerAddr)
+//	streamID, err := node.AcceptStream(ctx, peerAddr)
+//	if err != nil {
+//	  log.Fatal(err)
+//	}
+//	defer node.CloseStream(peerAddr, streamID)
+//	buf := make([]byte, 1024)
+//	n, err := node.Recv(ctx, buf, peerAddr, streamID)
+//	if err != nil {
+//	  log.Fatal(err)
+//	}
+//	err = node.Send([]byte("Hello"), peerAddr, streamID)
+//	if err != nil {
+//	  log.Fatal(err)
+//	}
 package gop2p
 
 import (
@@ -116,13 +125,7 @@ func (node *Node) CloseStream(addr *net.UDPAddr, streamID byte) error {
   if !ok {
     return newConnectionNotEstablishedError(addr.String())
   }
-  closed, err := conn.closeStream(node.udpConn, streamID)
-  if closed {
-    close(conn.consumableBuffer)
-    node.mutex.Lock()
-    delete(node.ipToConnection, addr.String())
-    node.mutex.Unlock()
-  }
+  err := conn.closeStream(node.udpConn, streamID)
   if err != nil {
     return err
   }
@@ -138,7 +141,6 @@ func (node *Node) ClosePeer(addr *net.UDPAddr) error {
     return newConnectionNotEstablishedError(addr.String())
   }
   err := conn.close(node.udpConn)
-  close(conn.consumableBuffer)
   node.mutex.Lock()
   delete(node.ipToConnection, addr.String())
   node.mutex.Unlock()
@@ -150,7 +152,7 @@ func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
   node.mutex.Lock()
   conn, ok := node.ipToConnection[addr.String()]
   if ok {
-    close(conn.consumableBuffer)
+    conn.destruct()
     delete(node.ipToConnection, addr.String())
   }
   node.mutex.Unlock()
@@ -159,9 +161,6 @@ func (node *Node) ClosePeerForce(addr *net.UDPAddr) {
 // Shutdown closes all connections and stops the node.
 func (node *Node) Shutdown() {
   node.mutex.Lock()
-  for _, conn := range node.ipToConnection {
-    close(conn.consumableBuffer)
-  }
   node.ipToConnection = make(map[string]*encryptedConnection)
   node.mutex.Unlock()
   for len(node.runErrors) > 0 {
@@ -174,8 +173,8 @@ func (node *Node) Shutdown() {
   close(node.runErrors)
 }
 
-// Connect establishes a connection with a peer.
-func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
+// ConnectPeer establishes a connection with a peer.
+func (node *Node) ConnectPeer(ctx context.Context, addr *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
@@ -216,8 +215,8 @@ func (node *Node) Connect(ctx context.Context, addr *net.UDPAddr) error {
   return nil
 }
 
-// Accept waits for a connection from a peer, returns the peer's address and error.
-func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
+// AcceptPeer waits for a connection from a peer, returns the peer's address and error.
+func (node *Node) AcceptPeer(ctx context.Context) (*net.UDPAddr, error) {
   select {
   case <-ctx.Done():
     return nil, newCancelledError()
@@ -249,8 +248,60 @@ func (node *Node) Accept(ctx context.Context) (*net.UDPAddr, error) {
   }
 }
 
-// ConnectViaPeer establishes a connection with a peer through an intermediate peer.
-func (node *Node) ConnectViaPeer(ctx context.Context, addr *net.UDPAddr, intermediate *net.UDPAddr) error {
+// AcceptStream waits for a stream opened from a peer, returns the stream ID and an error.
+func (node *Node) AcceptStream(ctx context.Context, addr *net.UDPAddr) (byte, error) {
+  node.mutex.RLock()
+  conn, ok := node.ipToConnection[addr.String()]
+  node.mutex.RUnlock()
+  if !ok {
+    return 0, newConnectionNotEstablishedError(addr.String())
+  }
+  select {
+  case <-ctx.Done():
+    return 0, newCancelledError()
+  case err := <-node.runErrors:
+    return 0, err
+  case incoming, ok := <-conn.incomingDataFromNewStream:
+    if !ok {
+      return 0, newChannelClosedError()
+    }
+    connectionClosed, err := conn.onDataFromNewStream(incoming, node.udpConn)
+    if connectionClosed {
+      node.mutex.Lock()
+      delete(node.ipToConnection, addr.String())
+      node.mutex.Unlock()
+    }
+    if err != nil {
+      return 0, err
+    }
+    return incoming.streamID, nil
+  }
+}
+
+// OpenStream opens a stream with a peer.
+func (node *Node) OpenStream(addr *net.UDPAddr, streamID byte) error {
+  select {
+  case err := <-node.runErrors:
+    return err
+  default:
+    node.mutex.RLock()
+    conn, ok := node.ipToConnection[addr.String()]
+    node.mutex.RUnlock()
+    if !ok {
+      return newConnectionNotEstablishedError(addr.String())
+    }
+    conn.rwMutex.Lock()
+    _, ok = conn.streams[streamID]
+    if !ok {
+      conn.streams[streamID] = newStream(streamID)
+    }
+    conn.rwMutex.Unlock()
+    return nil   
+  }
+}
+
+// ConnectPeerViaPeer establishes a connection with a peer through an intermediate peer.
+func (node *Node) ConnectPeerViaPeer(ctx context.Context, addr *net.UDPAddr, intermediate *net.UDPAddr) error {
   node.mutex.RLock()
   if _, ok := node.ipToConnection[addr.String()]; ok {
     node.mutex.RUnlock()
@@ -320,23 +371,28 @@ func (node *Node) GetPeerPublicKey(addr *net.UDPAddr) ([]byte, error) {
 }
 
 // Recv receives data from a specific peer, returns the data, stream ID and an error.
-func (node *Node) Recv(ctx context.Context, addr *net.UDPAddr) ([]byte, byte, error) {
+func (node *Node) Recv(ctx context.Context, buf []byte, addr *net.UDPAddr, streamID byte) (int, error) {
   node.mutex.RLock()
   conn, ok := node.ipToConnection[addr.String()]
   node.mutex.RUnlock()
   if !ok {
-    return nil, 0, newConnectionAlreadyEstablishedError(addr.String())
+    return -1, newConnectionNotEstablishedError(addr.String())
   }
-  select {
-  case <-ctx.Done():
-    return nil, 0, newCancelledError()
-  case err := <-node.runErrors:
-    return nil, 0, err
-  case consumable, ok := <-conn.consumableBuffer:
-    if !ok {
-      return nil, 0, newChannelClosedError()
+  needAcked := true
+  for {
+    select {
+    case <-ctx.Done():
+      return -1, newCancelledError()
+    case err := <-node.runErrors:
+      return -1, err
+    default:
+      n, consumed, err := conn.consume(buf, streamID, node.udpConn, needAcked)
+      if err != nil || consumed {
+	return n, err
+      }
+      needAcked = false
+      runtime.Gosched()
     }
-    return consumable.buffer, consumable.streamID, conn.tryAck(consumable.streamID, node.udpConn)
   }
 }
 
@@ -356,7 +412,7 @@ func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
   }
 }
 
-// Send sends data to a specific peer on a specific channel, returns an error.
+// Send sends data to a specific peer on a specific channel, which must be opened or accepted before, returns an error.
 func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
   select {
   case err := <- node.runErrors:
@@ -482,15 +538,14 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *encrypte
     switch packet.Type() {
     case PacketData:
       data := packet.(*data)
-      closed, err := conn.onData(data, node.udpConn)
-      if err != nil {
-	return err
-      }
-      if closed {
-	close(conn.consumableBuffer)
+      connectionClosed, err := conn.onData(data, node.udpConn)
+      if connectionClosed {
 	node.mutex.Lock()
 	delete(node.ipToConnection, addr.String())
 	node.mutex.Unlock()
+      }
+      if err != nil {
+	return err
       }
     case PacketIntroduction:
       intro := packet.(*introduction)

@@ -13,12 +13,7 @@ type encryptedConnection struct {
   streams map[byte]*stream
   txStream *mergeStream[packet]
   rwMutex sync.RWMutex
-  consumableBuffer chan consumable
-}
-
-type consumable struct {
-  buffer []byte
-  streamID byte
+  incomingDataFromNewStream chan *data
 }
 
 func newEncryptedConnection(addr *net.UDPAddr, peerPublicKeyED []byte, secretAES []byte) *encryptedConnection {
@@ -28,8 +23,17 @@ func newEncryptedConnection(addr *net.UDPAddr, peerPublicKeyED []byte, secretAES
     secretAES: secretAES,
     streams: make(map[byte]*stream),
     txStream: newMergeStream[packet](),
-    consumableBuffer: make(chan consumable, 8),
+    incomingDataFromNewStream: make(chan *data, 1),
   }
+}
+
+func (connection *encryptedConnection) destruct() {
+  close(connection.incomingDataFromNewStream)
+  connection.rwMutex.Lock()
+  for _, stream := range connection.streams {
+    stream.destruct()
+  }
+  connection.rwMutex.Unlock()
 }
 
 func (connection *encryptedConnection) encrypt(des []byte, plain []byte) error {
@@ -52,6 +56,31 @@ func (connection *encryptedConnection) decrypt(des []byte, cipher []byte) error 
     block.Decrypt(des[k:], cipher[k:])
   }
   return nil
+}
+
+func (connection *encryptedConnection) consume(buf []byte, streamID byte, udpConn *net.UDPConn, needAck bool) (int, bool, error) {
+  connection.rwMutex.RLock()
+  stream, ok := connection.streams[streamID]
+  connection.rwMutex.RUnlock()
+  if !ok {
+    return -1, false, newStreamNotFoundError(streamID)
+  }
+  n, consumed, p := stream.consume(buf, needAck)
+  if p != nil {
+    packets := connection.txStream.add([]packet{p})
+    if packets == nil {
+      return n, consumed, nil
+    }
+    bytesToSend := serializePackets(packets)
+    for _, b := range bytesToSend {
+      connection.encrypt(b, b)
+      _, err := udpConn.WriteToUDP(b, connection.addr)
+      if err != nil {
+	return n, consumed, err
+      }
+    }
+  }
+  return n, consumed, nil
 }
 
 func (connection *encryptedConnection) ack(streamID byte, udpConn *net.UDPConn) error {
@@ -103,45 +132,41 @@ func (connection *encryptedConnection) tryAck(streamID byte, udpConn *net.UDPCon
   return nil
 }
 
-func (connection *encryptedConnection) closeStream(udpConn *net.UDPConn, streamID byte) (bool, error) {
+func (connection *encryptedConnection) closeStream(udpConn *net.UDPConn, streamID byte) error {
   connection.rwMutex.RLock()
   stream, ok := connection.streams[streamID]
   connection.rwMutex.RUnlock()
   if !ok {
-    return false, nil
+    return nil
   }
-
-  closed := false
-  connection.rwMutex.Lock()
-  delete(connection.streams, streamID)
-  if len(connection.streams) == 0 {
-    closed = true
-  }
-  connection.rwMutex.Unlock()
-
+  var err error = nil
   p := stream.close()
   packets := connection.txStream.add([]packet{p})
-  if packets == nil {
-    return closed, nil
-  }
-  bytesToSend := serializePackets(packets)
-  for _, b := range bytesToSend {
-    connection.encrypt(b, b)
-    _, err := udpConn.WriteToUDP(b, connection.addr)
-    if err != nil {
-      return closed, err
+  if packets != nil {
+    bytesToSend := serializePackets(packets)
+    for _, b := range bytesToSend {
+      connection.encrypt(b, b)
+      _, err = udpConn.WriteToUDP(b, connection.addr)
+      if err != nil {
+	break
+      }
     }
   }
-  return closed, nil
+  connection.rwMutex.Lock()
+  delete(connection.streams, streamID)
+  connection.rwMutex.Unlock()
+  return err
 }
 
 func (connection *encryptedConnection) close(udpConn *net.UDPConn) error {
+  defer connection.destruct()
   packets := make([]packet, 0)
   connection.rwMutex.Lock()
   for _, stream := range connection.streams {
     packet := stream.close()
     packets = append(packets, packet)
   }
+  connection.streams = make(map[byte]*stream)
   connection.rwMutex.Unlock()
   packets = connection.txStream.add(packets)
   if packets == nil {
@@ -158,15 +183,22 @@ func (connection *encryptedConnection) close(udpConn *net.UDPConn) error {
   return nil
 }
 
+func (connection *encryptedConnection) onDataFromNewStream(incoming *data, udpConn *net.UDPConn) (bool, error) {
+  connection.rwMutex.Lock()
+  _, ok := connection.streams[incoming.streamID]
+  if !ok {
+    connection.streams[incoming.streamID] = newStream(incoming.streamID)
+  }
+  connection.rwMutex.Unlock()
+  return connection.onData(incoming, udpConn)
+}
+
 func (connection *encryptedConnection) onSend(data []byte, streamID byte, udpConn *net.UDPConn) error {
   connection.rwMutex.RLock()
   stream, ok := connection.streams[streamID]
   connection.rwMutex.RUnlock()
   if !ok {
-    stream = newStream(streamID)
-    connection.rwMutex.Lock()
-    connection.streams[streamID] = stream
-    connection.rwMutex.Unlock()
+    return newStreamNotFoundError(streamID)
   }
   packets := stream.onSend(data)
   if packets == nil {
@@ -183,29 +215,23 @@ func (connection *encryptedConnection) onSend(data []byte, streamID byte, udpCon
   return nil
 }
 
-func (connection *encryptedConnection) onData(data *data, udpConn *net.UDPConn) (bool, error) {
-  connectionClosed := false
+func (connection *encryptedConnection) onData(d *data, udpConn *net.UDPConn) (bool, error) {
   connection.rwMutex.RLock()
-  stream, ok := connection.streams[data.streamID]
+  stream, ok := connection.streams[d.streamID]
   connection.rwMutex.RUnlock()
   if !ok {
-    stream = newStream(data.streamID)
-    connection.rwMutex.Lock()
-
-    connection.streams[data.streamID] = stream
-    connection.rwMutex.Unlock()
+    connection.incomingDataFromNewStream <- d
+    return false, nil
   }
-  closed, packets, consumableBuffer := stream.onData(data, nil)
+  connectionClosed := false
+  closed, packets := stream.onData(d)
   if closed {
     connection.rwMutex.Lock()
-    delete(connection.streams, data.streamID)
+    delete(connection.streams, d.streamID)
     if len(connection.streams) == 0 {
       connectionClosed = true
     }
     connection.rwMutex.Unlock()
-  }
-  if consumableBuffer != nil {
-    connection.consumableBuffer <- consumable{consumableBuffer, data.streamID}
   }
   if packets == nil {
     return connectionClosed, nil

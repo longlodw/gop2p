@@ -30,17 +30,24 @@ func TestUpdateRxBufferConsumableAckNumber(t *testing.T) {
     expectedConsumableBuffer = append(expectedConsumableBuffer, dataBuf...)
   }
   expectedAckNumber := ackNumber + uint32(len(buffer))
-  updatedBuffer, consumableBuffer, updatedAckNumber := updateRxBufferConsumableAckNumber(buffer, nil, ackNumber)
+  consumableBuffer := make([][]byte, 0)
+  updatedBuffer, consumableBuffer, updatedAckNumber, hasNewData := updateRxBufferConsumableAckNumber(buffer, consumableBuffer, ackNumber, false)
   if updatedAckNumber != expectedAckNumber {
     t.Fatalf("Expected %d, got %d", expectedAckNumber, updatedAckNumber)
   }
-  if !bytes.Equal(consumableBuffer, expectedConsumableBuffer) {
+  mergedConsumableBuffer := make([]byte, 0)
+  for _, segment := range consumableBuffer {
+    mergedConsumableBuffer = append(mergedConsumableBuffer, segment...)
+  }
+  if !bytes.Equal(mergedConsumableBuffer, expectedConsumableBuffer) {
     t.Fatalf("Expected %v, got %v", expectedConsumableBuffer, consumableBuffer)
   }
   if len(updatedBuffer) != 0 {
     t.Fatalf("Expected 0, got %d", len(updatedBuffer))
   }
-  t.Logf("Passed updateRxBufferConsumableAckNumber")
+  if !hasNewData {
+    t.Fatalf("Expected true, got false")
+  }
 }
 
 func TestAddDataToBuffer(t *testing.T) {
@@ -67,7 +74,6 @@ func TestAddDataToBuffer(t *testing.T) {
       t.Fatalf("Expected %d, got %d", k, buffer[k].sequenceNumber)
     }
   }
-  t.Logf("Passed addDataToBuffer")
 }
 
 func TestOnData(t *testing.T) {
@@ -89,13 +95,12 @@ func TestOnData(t *testing.T) {
   mrand.Shuffle(len(transactions), func(i, j int) {
     transactions[i], transactions[j] = transactions[j], transactions[i]
   })
-  consumableBuffer := make([]byte, 0, MaxDataSize)
   for _, transaction := range transactions {
     var (
       closed bool
       packets []packet
     )
-    closed, packets, consumableBuffer = stream.onData(transaction, consumableBuffer)
+    closed, packets = stream.onData(transaction)
     if closed {
       t.Fatalf("Expected false, got true")
     }
@@ -103,8 +108,12 @@ func TestOnData(t *testing.T) {
       t.Fatalf("Expected 0, got %d", len(packets))
     }
   }
-  if !bytes.Equal(consumableBuffer, expectedConsumableBuffer) {
-    t.Fatalf("Expected %v, got %v", expectedConsumableBuffer, consumableBuffer)
+  mergedConsumableBuffer := make([]byte, 0)
+  for _, segment := range stream.consumableBuffer {
+    mergedConsumableBuffer = append(mergedConsumableBuffer, segment...)
+  }
+  if !bytes.Equal(mergedConsumableBuffer, expectedConsumableBuffer) {
+    t.Fatalf("Expected %v, got %v", expectedConsumableBuffer, stream.consumableBuffer)
   }
   t.Logf("Passed onData")
 }
