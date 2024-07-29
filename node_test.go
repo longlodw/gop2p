@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"net"
 	"testing"
 )
@@ -54,9 +56,13 @@ func TestSendRecv(t *testing.T) {
       errChan <- err
       return
     }
-    err = node1.Send(bytesToSend, addr2, 0)
+    n, err := node1.Send(bytesToSend, addr2, 0)
     if err != nil {
       errChan <- err
+      return
+    }
+    if n != len(bytesToSend) {
+      errChan <- errors.New(fmt.Sprintf("Failed to send all bytes got %d expected %d", n, len(bytesToSend)))
       return
     }
     select {

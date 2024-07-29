@@ -413,16 +413,16 @@ func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
 }
 
 // Send sends data to a specific peer on a specific channel, which must be opened or accepted before, returns an error.
-func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) error {
+func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) (int, error) {
   select {
   case err := <- node.runErrors:
-    return err
+    return -1, err
   default:
     node.mutex.RLock()
     conn, ok := node.ipToConnection[addr.String()]
     node.mutex.RUnlock()
     if !ok {
-      return newConnectionNotEstablishedError(addr.String())
+      return -1, newConnectionNotEstablishedError(addr.String())
     }
     return conn.onSend(data, streamID, node.udpConn)   
   }
