@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"time"
 )
 
 // ReadWriteStream is a stream on a specific address implements io.ReadWriteCloser.
@@ -12,13 +13,15 @@ type ReadWriteCloserStream struct {
   node *Node
   addr *net.UDPAddr
   streamID byte
+  timeout time.Duration
 }
 
-func NewReadWriteStream(node *Node, addr *net.UDPAddr, streamID byte) *ReadWriteCloserStream {
+func NewReadWriteStream(node *Node, addr *net.UDPAddr, streamID byte, timeout time.Duration) *ReadWriteCloserStream {
   return &ReadWriteCloserStream{
     node: node,
     addr: addr,
     streamID: streamID,
+    timeout: timeout,
   }
 }
 
@@ -27,7 +30,9 @@ func (s *ReadWriteCloserStream) Write(data []byte) (int, error) {
 }
 
 func (s *ReadWriteCloserStream) Read(data []byte) (int, error) {
-  n, err := s.node.Recv(context.Background(), data, s.addr, s.streamID)
+  ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+  defer cancel()
+  n, err := s.node.Recv(ctx, data, s.addr, s.streamID)
   if n == 0 && err == nil {
     return 0, io.EOF
   }
