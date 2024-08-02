@@ -548,12 +548,7 @@ func (node *Node) handleConnection(addr *net.UDPAddr, buf []byte, conn *encrypte
     switch packet.Type() {
     case PacketData:
       data := packet.(*data)
-      connectionClosed, err := conn.onData(data, node.udpConn)
-      if connectionClosed {
-	node.mutex.Lock()
-	delete(node.ipToConnection, addr.String())
-	node.mutex.Unlock()
-      }
+      err := conn.onData(data, node.udpConn)
       if err != nil {
 	return err
       }
