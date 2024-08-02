@@ -52,11 +52,21 @@ func (s *stream) close() packet {
   return packet
 }
 
-func (s *stream) onSend(buf []byte) []packet {
+func (s *stream) onSend(buf []byte) ([]packet, int) {
   segments := segments(buf)
   packets := make([]packet, len(segments))
+  var diff int64 = 0
   s.mutex.Lock()
   defer s.mutex.Unlock()
+  if s.sequenceNumber < s.ackedSequenceNumber {
+    diff = int64(s.ackedSequenceNumber - s.sequenceNumber - 1)
+  } else {
+    diff = int64(^uint32(0) - (s.sequenceNumber - s.ackedSequenceNumber))
+  }
+  if diff <= int64(len(segments)) {
+    segments = segments[:diff]
+  }
+  l := 0
   for i, segment := range segments {
     packet := &data{
       streamID: s.streamID,
@@ -67,13 +77,14 @@ func (s *stream) onSend(buf []byte) []packet {
     s.txPacketsMap[s.sequenceNumber] = packet
     s.sequenceNumber += 1
     packets[i] = packet
+    l += len(segment)
   }
   if s.needAck {
     packets[0].(*data).dataType |= DataAck
     s.needAck = false
     packets[0].(*data).ackNumber = s.ackNumber
   }
-  return packets
+  return packets, l
 }
 
 func (s *stream) consume(buf []byte, needAck bool) (int, bool, packet) {
@@ -152,18 +163,26 @@ func (s *stream) tryAck() packet {
   return nil
 }
 
+func (s *stream) updateSequenceNumber(dataAckNumber uint32) {
+  s.mutex.Lock()
+  defer s.mutex.Unlock()
+  k := s.ackNumber
+  for ; k != dataAckNumber && k != s.sequenceNumber; k += 1 {
+    delete(s.txPacketsMap, k)
+  }
+  s.ackedSequenceNumber = k
+  if s.sequenceNumber == s.ackedSequenceNumber && dataAckNumber > s.ackedSequenceNumber {
+    s.sequenceNumber = dataAckNumber
+    s.ackedSequenceNumber = dataAckNumber
+  }
+}
+
 func (s *stream) onData(dataPtr *data) (bool, []packet) {
   needResend := false
   needAck := false
   s.mutex.Lock()
-  if s.ackedSequenceNumber < dataPtr.ackNumber && dataPtr.dataType & DataAck != 0 {
-    for k := s.ackedSequenceNumber; k < dataPtr.ackNumber; k += 1 {
-      delete(s.txPacketsMap, k)
-    }
-    s.ackedSequenceNumber = dataPtr.ackNumber
-    if s.sequenceNumber < s.ackedSequenceNumber {
-      s.sequenceNumber = s.ackedSequenceNumber
-    }
+  if dataPtr.dataType & DataAck != 0 {
+    s.updateSequenceNumber(dataPtr.sequenceNumber)
     needResend = true
   }
   if s.ackNumber <= dataPtr.sequenceNumber {

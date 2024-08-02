@@ -26,7 +26,9 @@ func NewReadWriteStream(node *Node, addr *net.UDPAddr, streamID byte, timeout ti
 }
 
 func (s *ReadWriteCloserStream) Write(data []byte) (int, error) {
-  return s.node.Send(data, s.addr, s.streamID)
+  ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+  defer cancel()
+  return s.node.Send(ctx, data, s.addr, s.streamID)
 }
 
 func (s *ReadWriteCloserStream) Read(data []byte) (int, error) {

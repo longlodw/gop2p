@@ -26,7 +26,7 @@
 //	if err != nil {
 //	  log.Fatal(err)
 //	}
-//	err = node.Send([]byte("Hello"), peerAddr, streamID)
+//	_, err = node.Send(ctx, []byte("Hello"), peerAddr, streamID)
 //	if err != nil {
 //	  log.Fatal(err)
 //	}
@@ -265,12 +265,7 @@ func (node *Node) AcceptStream(ctx context.Context, addr *net.UDPAddr) (byte, er
     if !ok {
       return 0, newChannelClosedError()
     }
-    connectionClosed, err := conn.onDataFromNewStream(incoming, node.udpConn)
-    if connectionClosed {
-      node.mutex.Lock()
-      delete(node.ipToConnection, addr.String())
-      node.mutex.Unlock()
-    }
+    err := conn.onDataFromNewStream(incoming, node.udpConn)
     if err != nil {
       return 0, err
     }
@@ -412,19 +407,34 @@ func (node *Node) Ack(addr *net.UDPAddr, streamID byte) error {
   }
 }
 
-// Send sends data to a specific peer on a specific channel, which must be opened or accepted before, returns an error.
-func (node *Node) Send(data []byte, addr *net.UDPAddr, streamID byte) (int, error) {
-  select {
-  case err := <- node.runErrors:
-    return -1, err
-  default:
-    node.mutex.RLock()
-    conn, ok := node.ipToConnection[addr.String()]
-    node.mutex.RUnlock()
-    if !ok {
-      return -1, newConnectionNotEstablishedError(addr.String())
+// Send sends data to a specific peer on a specific channel, which must be opened or accepted before, returns number of bytes sent and an error.
+func (node *Node) Send(ctx context.Context, data []byte, addr *net.UDPAddr, streamID byte) (int, error) {
+  l := 0
+  originalDataLen := len(data)
+  for {
+    select {
+    case <-ctx.Done():
+      return l, newCancelledError()
+    case err := <- node.runErrors:
+      return l, err
+    default:
+      node.mutex.RLock()
+      conn, ok := node.ipToConnection[addr.String()]
+      node.mutex.RUnlock()
+      if !ok {
+	return l, newConnectionNotEstablishedError(addr.String())
+      }
+      n, err := conn.onSend(data, streamID, node.udpConn)   
+      l += n
+      if err != nil || l == originalDataLen {
+	return l, err
+      }
+      if l != len(data) {
+	data = data[l:]
+	runtime.Gosched()
+	continue
+      }
     }
-    return conn.onSend(data, streamID, node.udpConn)   
   }
 }
 
