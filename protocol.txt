@@ -45,6 +45,12 @@
         1: contains ack
         2: finish
 
+    ### connection closed
+
+    | payload |
+    |---------|
+    | 0       |
+
 # 2p2 protocol
 
   ## handshake
@@ -56,7 +62,7 @@
   hello                     ->
   <-                     hello
 
-  ## data
+  ## data in a stream
 
   node 1                                             node 2
   ---------------------------------------------------------
@@ -64,8 +70,7 @@
   <-                                   data, seq=a, ack=s+1
   data, seq=s+1, ack=a+1                                 ->
   <-                                 data, seq=a+1, ack=s+2
-  finish, seq=s+2, ack=a+2                               ->
-  <-                               finish, seq=a+2, ack=s+3
+  closed                                                 ->
 
   ## introduction
 

@@ -239,6 +239,29 @@ func TestData(t *testing.T) {
   }
 }
 
+func TestConnectionClosed(t *testing.T) {
+  connectionClosed1 := connectionClosed{}
+  buffer := make([]byte, connectionClosed1.BufferSize())
+  n, err := connectionClosed1.Serialize(buffer)
+  if err != nil {
+    t.Fatal(err)
+  }
+  if n != len(buffer) {
+    t.Fatalf("Expected %d, got %d when serializing", len(buffer), n)
+  }
+  p, n, err := deserializePacket(buffer)
+  if err != nil {
+    t.Fatal(err)
+  }
+  if n != len(buffer) {
+    t.Fatalf("Expected %d, got %d when deserialize", len(buffer), n)
+  }
+  _, ok := p.(*connectionClosed)
+  if !ok {
+    t.Fatalf("Expected %T, got %T", connectionClosed1, p)
+  }
+}
+
 func TestSerialzeDeserializePackets(t *testing.T) {
   packets := make([]packet, 0)
   expectedTotalLen := 0

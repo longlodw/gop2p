@@ -31,7 +31,7 @@ func TestUpdateRxBufferConsumableAckNumber(t *testing.T) {
   }
   expectedAckNumber := ackNumber + uint32(len(buffer))
   consumableBuffer := make([][]byte, 0)
-  updatedBuffer, consumableBuffer, updatedAckNumber, hasNewData := updateRxBufferConsumableAckNumber(buffer, consumableBuffer, ackNumber, false)
+  updatedBuffer, consumableBuffer, updatedAckNumber := updateRxBufferConsumableAckNumber(buffer, consumableBuffer, ackNumber)
   if updatedAckNumber != expectedAckNumber {
     t.Fatalf("Expected %d, got %d", expectedAckNumber, updatedAckNumber)
   }
@@ -44,9 +44,6 @@ func TestUpdateRxBufferConsumableAckNumber(t *testing.T) {
   }
   if len(updatedBuffer) != 0 {
     t.Fatalf("Expected 0, got %d", len(updatedBuffer))
-  }
-  if !hasNewData {
-    t.Fatalf("Expected true, got false")
   }
 }
 

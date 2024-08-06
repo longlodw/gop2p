@@ -17,7 +17,7 @@ func makeTestNode(port int) (*Node, *net.UDPAddr) {
   if err != nil {
     return nil, nil
   }
-  node, err := NewNode(pvk1, pbk1, addr)
+  node, err := NewNode(pvk1, pbk1, addr, 16, 16)
   if err != nil {
     return nil, nil
   }
@@ -51,12 +51,13 @@ func TestSendRecv(t *testing.T) {
       errChan <- err
       return
     }
-    err = node1.OpenStream(addr2, 0)
+    defer node1.ClosePeer(addr2)
+    err = node1.ConnectStream(addr2, 0)
     if err != nil {
       errChan <- err
       return
     }
-    n, err := node1.Send(bytesToSend, addr2, 0)
+    n, err := node1.Send(context.TODO(), bytesToSend, addr2, 0)
     if err != nil {
       errChan <- err
       return

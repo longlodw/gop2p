@@ -4,28 +4,28 @@ import (
 	"fmt"
 )
 
-type ConnectionNotEstablishedError struct {
+type PeerConnectionNotEstablishedError struct {
   addr string
 }
 
-func (e ConnectionNotEstablishedError) Error() string {
-  return fmt.Sprintf("Connection to %s not established", e.addr)
+func (e PeerConnectionNotEstablishedError) Error() string {
+  return fmt.Sprintf("Connection to peer %s not established", e.addr)
 }
 
-func newConnectionNotEstablishedError(addr string) ConnectionNotEstablishedError {
-  return ConnectionNotEstablishedError{addr: addr}
+func newPeerConnectionNotEstablishedError(addr string) PeerConnectionNotEstablishedError {
+  return PeerConnectionNotEstablishedError{addr: addr}
 }
 
-type ConnectionAlreadyEstablishedError struct {
+type PeerConnectionAlreadyEstablishedError struct {
   addr string
 }
 
-func (e ConnectionAlreadyEstablishedError) Error() string {
-  return fmt.Sprintf("Connection to %s already established", e.addr)
+func (e PeerConnectionAlreadyEstablishedError) Error() string {
+  return fmt.Sprintf("Connection to peer %s already established", e.addr)
 }
 
-func newConnectionAlreadyEstablishedError(addr string) ConnectionAlreadyEstablishedError {
-  return ConnectionAlreadyEstablishedError{addr: addr}
+func newConnectionAlreadyEstablishedError(addr string) PeerConnectionAlreadyEstablishedError {
+  return PeerConnectionAlreadyEstablishedError{addr: addr}
 }
 
 type CancelledError struct {}
@@ -65,17 +65,26 @@ func newInvalidPacketError(reason string) InvalidPacketError {
   }
 }
 
-type StreamNotFoundError struct {
+type StreamNotEstablishedError struct {
   streamID byte
 }
 
-func (e StreamNotFoundError) Error() string {
+func (e StreamNotEstablishedError) Error() string {
   return fmt.Sprintf("Stream %d not found", e.streamID)
 }
 
-func newStreamNotFoundError(streamID byte) StreamNotFoundError {
-  return StreamNotFoundError{streamID: streamID}
+func newStreamNotEstablishedError(streamID byte) StreamNotEstablishedError {
+  return StreamNotEstablishedError{streamID: streamID}
 }
 
+type StreamAlreadyEstablishedError struct {
+  streamID byte
+}
 
+func (e StreamAlreadyEstablishedError) Error() string {
+  return fmt.Sprintf("Stream %d already opened", e.streamID)
+}
 
+func newStreamAlreadyEstablishedError(streamID byte) StreamAlreadyEstablishedError {
+  return StreamAlreadyEstablishedError{streamID: streamID}
+}

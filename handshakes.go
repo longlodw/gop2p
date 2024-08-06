@@ -11,9 +11,10 @@ import (
 type handshake struct {
   privateKeyDH *ecdh.PrivateKey
   publicKeyDH *ecdh.PublicKey
+  maxStreamQueue int
 }
 
-func newHandshake() *handshake {
+func newHandshake(maxStreamQueue int) *handshake {
   privateKeyDH, err := ecdh.X25519().GenerateKey(rand.Reader)
   if err != nil {
     return nil
@@ -22,10 +23,11 @@ func newHandshake() *handshake {
   return &handshake{
     privateKeyDH: privateKeyDH,
     publicKeyDH: publicKeyDH,
+    maxStreamQueue: maxStreamQueue,
   }
 }
 
-func (hs *handshake) onHello(packet *hello, source *net.UDPAddr) (*encryptedConnection, error) {
+func (hs *handshake) onHello(packet *hello, source *net.UDPAddr) (*peerConnection, error) {
   if !verifyHello(packet.publicKeyDH[:], packet.publicKeyED[:], packet.signature[:]) {
     return nil, newInvalidPacketError("Invalid signature")
   }
@@ -37,7 +39,7 @@ func (hs *handshake) onHello(packet *hello, source *net.UDPAddr) (*encryptedConn
   if err != nil {
     return nil, err
   }
-  return newEncryptedConnection(source, packet.publicKeyED[:], aesSecret), nil
+  return newPeerConnection(source, packet.publicKeyED[:], aesSecret, hs.maxStreamQueue), nil
 }
 
 func (hs *handshake) onHelloRetry(packet *helloRetry, source *net.UDPAddr, udpConn *net.UDPConn, localPrivateKeyED []byte, localPublicKeyED []byte) error {
